@@ -1,3 +1,13 @@
+@font-face {
+  font-family: "MadeTommy";
+  src: url("../public/MadeTommyRegular.otf") format("opentype");
+}
+
+@font-face {
+  font-family: "MadeTommyExtra";
+  src: url("../public/MadeTommyBlack.otf") format("opentype");
+}
+
 .App {
   text-align: center;
 }
