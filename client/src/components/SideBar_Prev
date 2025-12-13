@@ -1,0 +1,35 @@
+import { Box, Typography, Paper } from "@mui/material";
+
+
+export default function SideBar({textColor}) {
+
+return (
+    <Box width="280px" bgcolor="white" p={3} boxShadow="2px 0px 10px rgba(0,0,0,0.05)">
+    <Typography fontFamily={"MadeTommy"} variant="caption" mb={2} color={textColor}>
+    HealthPeaceGPT
+    </Typography>
+
+    <Typography fontFamily={"MadeTommy"} fontSize={13} opacity={0.7}>
+    Prompt to AI Chatbot
+    </Typography>
+
+    <Paper sx={{ p:2, mt:1, fontSize:13 }}>
+    You are an AI Personalized Longevity Health Assistant to Brian Peace...
+    </Paper>
+
+    <Typography fontFamily={"MadeTommy"} mt={4} fontSize={13} opacity={0.7}>Knowledge Files</Typography>
+    <Paper sx={{ height:250, mt:1, overflowY:"auto", p:1 }}>
+
+    {[...Array(8)].map((_,i)=>(
+        <Typography 
+        fontFamily={"MadeTommy"} 
+        key={i} fontSize={13} mb={1} 
+        sx={{ borderBottom:"1px solid #eee", pb:0.5 }}
+        >
+        250625 Stem Cells.pdf
+        </Typography>
+    ))}
+    </Paper>
+    </Box>
+)
+}
