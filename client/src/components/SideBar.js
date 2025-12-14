@@ -1,19 +1,20 @@
 import { Box, Typography, Paper, Button, TextField } from "@mui/material";
 import { FileUpload } from '@mui/icons-material';
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react"; // <-- ADDED useRef
 
 const DEFAULT_PROMPT =
   "You are an AI Personalized Longevity Health Assistant to Brian Peace...";
 
 export default function SideBar({ textColor }) {
+  const fileInputRef = useRef(null); // <-- NEW: Ref to clear the file input
   const [prompt] = useState(DEFAULT_PROMPT);
   const [files, setFiles] = useState([]);
   const [selectedFile, setSelectedFile] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
 
-  // Fetch knowledge files from backend
+  // Fetch knowledge files from backend (used only on initial load)
   const fetchFiles = async () => {
-    const res = await fetch("http://localhost:5000/files");
+    const res = await fetch("http://localhost:5001/files");
     const data = await res.json();
     setFiles(data);
   };
@@ -29,21 +30,51 @@ export default function SideBar({ textColor }) {
     const formData = new FormData();
     formData.append("file", selectedFile);
 
-    await fetch("http://localhost:5000/upload", {
+    const response = await fetch("http://localhost:5001/upload", {
       method: "POST",
       body: formData,
     });
 
-    setSelectedFile(null);
-    fetchFiles();
+    if (response.ok) {
+        // 1. Get the JSON object that the server sent back ({id, name})
+        const newFile = await response.json(); 
+        
+        // 2. Update the 'files' state by adding the new file object
+        setFiles(prevFiles => [...prevFiles, { 
+            id: newFile.id, 
+            name: newFile.name 
+        }]);
+        
+        // 3. Clear the file selection state
+        setSelectedFile(null);
+        
+        // 4. Reset the file input element's value (critical for re-upload)
+        if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+        }
+        
+    } else {
+        console.error("Upload failed on server side, Status:", response.status);
+        setSelectedFile(null); 
+    }
   };
 
   // Delete file
   const handleDelete = async (id) => {
-    await fetch(`http://localhost:5000/delete/${id}`, {
+    await fetch(`http://localhost:5001/delete/${id}`, {
       method: "DELETE",
     });
-    fetchFiles();
+    
+    // Update state by filtering out the deleted file
+    setFiles(prevFiles => prevFiles.filter(file => file.id !== id));
+    
+    // --- FIX FOR RE-UPLOAD ISSUE ---
+    // If the user deletes a file, we reset the file input element
+    if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+    }
+    // Also clear selectedFile state just in case
+    setSelectedFile(null); 
   };
 
   // Search file
@@ -155,6 +186,7 @@ export default function SideBar({ textColor }) {
             hidden
             accept=".pdf"
             onChange={(e) => setSelectedFile(e.target.files[0])}
+            ref={fileInputRef} // <-- ATTACH REF HERE
           />
         </Button>
       </Box>
