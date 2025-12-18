@@ -2,6 +2,7 @@
   "name": "server",
   "version": "1.0.0",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -11,8 +12,21 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "canvas": "^3.2.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "fs-extra": "^11.3.2",
+    "mammoth": "^1.11.0",
+    "multer": "^2.0.2",
+    "node-tesseract-ocr": "^2.2.1",
+    "openai": "^6.10.0",
+    "pdf-parse": "^2.4.5",
+    "pdf-to-img": "^5.0.0",
+    "pdf-to-png-converter": "^3.11.0",
+    "pdf2image": "^1.2.3",
+    "pdfjs-dist": "^5.4.449",
+    "tesseract.js": "^7.0.0",
+    "uuid": "^13.0.0"
   }
 }

@@ -1,16 +1,13 @@
-import { Box, Typography, Paper, Button, TextField } from "@mui/material";
+import { Box, Typography, Paper, Button, TextField, CircularProgress } from "@mui/material";
 import { FileUpload } from '@mui/icons-material';
 import { useEffect, useState, useRef } from "react"; // <-- ADDED useRef
 
-const DEFAULT_PROMPT =
-  "You are an AI Personalized Longevity Health Assistant to Brian Peace...";
-
 export default function SideBar({ textColor }) {
   const fileInputRef = useRef(null); // <-- NEW: Ref to clear the file input
-  const [prompt] = useState(DEFAULT_PROMPT);
   const [files, setFiles] = useState([]);
   const [selectedFile, setSelectedFile] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [uploading, setUploading] = useState(false);
 
   // Fetch knowledge files from backend (used only on initial load)
   const fetchFiles = async () => {
@@ -26,38 +23,45 @@ export default function SideBar({ textColor }) {
   // Upload file
   const handleUpload = async () => {
     if (!selectedFile) return;
-
+  
+    setUploading(true); // START loading
+  
     const formData = new FormData();
     formData.append("file", selectedFile);
-
-    const response = await fetch("http://localhost:5001/upload", {
-      method: "POST",
-      body: formData,
-    });
-
-    if (response.ok) {
-        // 1. Get the JSON object that the server sent back ({id, name})
+  
+    try {
+      const response = await fetch("http://localhost:5001/upload", {
+        method: "POST",
+        body: formData,
+      });
+  
+      if (response.ok) {
         const newFile = await response.json(); 
         
-        // 2. Update the 'files' state by adding the new file object
         setFiles(prevFiles => [...prevFiles, { 
-            id: newFile.id, 
-            name: newFile.name 
+          id: newFile.id, 
+          name: newFile.name 
         }]);
-        
-        // 3. Clear the file selection state
+  
         setSelectedFile(null);
-        
-        // 4. Reset the file input element's value (critical for re-upload)
+  
         if (fileInputRef.current) {
-            fileInputRef.current.value = "";
+          fileInputRef.current.value = "";
         }
-        
-    } else {
+  
+        // Optional: show a short success feedback
+        console.log("File uploaded and embedded successfully.");
+      } else {
         console.error("Upload failed on server side, Status:", response.status);
-        setSelectedFile(null); 
+        setSelectedFile(null);
+      }
+    } catch (err) {
+      console.error("Upload error:", err);
+    } finally {
+      setUploading(false); // STOP loading
     }
   };
+  
 
   // Delete file
   const handleDelete = async (id) => {
@@ -92,51 +96,6 @@ export default function SideBar({ textColor }) {
       flexDirection="column"
       gap={2}
     >
-      {/* Title */}
-      <Typography fontFamily={"MadeTommy"} variant="caption" color={textColor}>
-        HealthPeaceGPT
-      </Typography>
-
-      {/* Prompt Editor */}
-      <Typography fontFamily={"MadeTommy"} fontSize={13} opacity={0.7}>
-        Prompt to AI Chatbot
-      </Typography>
-
-      <TextField
-        InputProps={{
-          readOnly: true,
-        }}
-        multiline
-        variant="filled" 
-        minRows={4}
-        value={prompt}
-
-        sx={{
-          borderRadius: 2, 
-          overflow: 'hidden', 
-
-          '& .MuiFilledInput-root': {
-            padding: '10px', 
-            backgroundColor: '#E9ECEF', 
-            borderRadius: 'inherit', 
-
-            '&:hover:not(.Mui-disabled):before': {
-                borderBottom: 'none !important',
-            },
-            '&:after': { 
-                borderBottom: 'none !important',
-            },
-            '&:before': { 
-                borderBottom: 'none !important',
-            },
-          },
-          
-          '& .MuiInputBase-input': {
-            fontSize: '12px', 
-          },
-        }}
-      />
-
       {/* Knowledge Files HEADING, COUNT, & UPLOAD BUTTON CONTAINER */}
       <Box display="flex" justifyContent="space-between" alignItems="center" mt={2}>
         
@@ -150,7 +109,7 @@ export default function SideBar({ textColor }) {
                 opacity={0.7}
                 mb={0.1} // Sets a very small margin below the heading
             >
-              Knowledge Files
+              PDF Database
             </Typography>
 
             {/* File Count Display */}
@@ -192,17 +151,18 @@ export default function SideBar({ textColor }) {
       </Box>
 
       {selectedFile && (
-        <Button 
-          size="small" 
-          onClick={handleUpload}
-          sx={{
-            color: '#9ABDDC',
-            textTransform: 'none', 
-          }}
-        >
-          Confirm Upload
-        </Button>
-      )}
+            <Button
+            size="small"
+            onClick={handleUpload}
+            sx={{ color: '#9ABDDC', textTransform: 'none', display:'flex', alignItems:'center', gap:1 }}
+            disabled={uploading}
+            >
+            {uploading && <CircularProgress size={16} />}
+            {uploading ? "Uploading & Embedding..." : "Confirm Upload"}
+            </Button>
+
+        )}
+
 
       {/* Search Bar */}
       <TextField
