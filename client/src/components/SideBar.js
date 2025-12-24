@@ -4,17 +4,25 @@ import {
   Button,
   TextField,
   CircularProgress,
+  List,
+  ListItem,
+  ListItemText,
+  ListItemSecondaryAction,
+  IconButton,
 } from "@mui/material";
-import { FileUpload } from "@mui/icons-material";
+import { FileUpload, Delete as DeleteIcon } from "@mui/icons-material";
 import { useEffect, useState, useRef } from "react";
+import { useLayout } from "../context/LayoutContext";
 
 export default function SideBar({ textColor }) {
   const fileInputRef = useRef(null);
+  const { openPDF } = useLayout();
 
   const [files, setFiles] = useState([]);
-  const [selectedFile, setSelectedFile] = useState(null);
+  const [selectedFiles, setSelectedFiles] = useState([]); // Changed to array
   const [searchTerm, setSearchTerm] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({}); // Track progress per file
 
   // Fetch files on load
   const fetchFiles = async () => {
@@ -27,50 +35,105 @@ export default function SideBar({ textColor }) {
     fetchFiles();
   }, []);
 
-  // Upload file
+  // Handle file selection (multiple files)
+  const handleFileSelect = (event) => {
+    const selected = Array.from(event.target.files);
+    setSelectedFiles(selected);
+  };
+
+  // Upload multiple files
   const handleUpload = async () => {
-    if (!selectedFile) return;
+    if (selectedFiles.length === 0) return;
 
     setUploading(true);
+    const uploadedFiles = [];
 
-    const formData = new FormData();
-    formData.append("file", selectedFile);
+    for (let i = 0; i < selectedFiles.length; i++) {
+      const file = selectedFiles[i];
+      
+      // Update progress
+      setUploadProgress(prev => ({
+        ...prev,
+        [file.name]: { progress: 0, status: 'uploading' }
+      }));
 
-    try {
-      const response = await fetch("http://localhost:5001/upload", {
-        method: "POST",
-        body: formData,
-      });
+      const formData = new FormData();
+      formData.append("file", file);
 
-      if (response.ok) {
-        const newFile = await response.json();
+      try {
+        // Simulate progress (optional - for visual feedback)
+        const simulateProgress = setInterval(() => {
+          setUploadProgress(prev => ({
+            ...prev,
+            [file.name]: { 
+              ...prev[file.name], 
+              progress: Math.min((prev[file.name]?.progress || 0) + 10, 90) 
+            }
+          }));
+        }, 300);
 
-        setFiles((prev) => [...prev, newFile]);
-        setSelectedFile(null);
+        const response = await fetch("http://localhost:5001/upload", {
+          method: "POST",
+          body: formData,
+        });
 
-        if (fileInputRef.current) {
-          fileInputRef.current.value = "";
+        clearInterval(simulateProgress);
+
+        if (response.ok) {
+          const newFile = await response.json();
+          uploadedFiles.push(newFile);
+          
+          // Update progress to completed
+          setUploadProgress(prev => ({
+            ...prev,
+            [file.name]: { progress: 100, status: 'completed' }
+          }));
+        } else {
+          setUploadProgress(prev => ({
+            ...prev,
+            [file.name]: { progress: 0, status: 'error', error: 'Upload failed' }
+          }));
         }
+      } catch (err) {
+        console.error("Upload error for", file.name, ":", err);
+        setUploadProgress(prev => ({
+          ...prev,
+          [file.name]: { progress: 0, status: 'error', error: err.message }
+        }));
       }
-    } catch (err) {
-      console.error("Upload error:", err);
-    } finally {
-      setUploading(false);
     }
+
+    // Update files list with all uploaded files
+    if (uploadedFiles.length > 0) {
+      setFiles(prev => [...prev, ...uploadedFiles]);
+    }
+
+    // Clear selected files and reset input
+    setSelectedFiles([]);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+
+    setUploading(false);
+    // Clear progress after a delay
+    setTimeout(() => {
+      setUploadProgress({});
+    }, 3000);
   };
 
   // Delete file
-  const handleDelete = async (id) => {
+  const handleDelete = async (id, e) => {
+    e.stopPropagation();
     await fetch(`http://localhost:5001/delete/${id}`, {
       method: "DELETE",
     });
 
     setFiles((prev) => prev.filter((file) => file.id !== id));
+  };
 
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-    setSelectedFile(null);
+  // Handle PDF click
+  const handlePDFClick = (file) => {
+    openPDF(file);
   };
 
   const filteredFiles = files.filter((file) =>
@@ -86,6 +149,10 @@ export default function SideBar({ textColor }) {
       display="flex"
       flexDirection="column"
       gap={2}
+      sx={{
+        height: "100vh",
+        overflowY: "auto",
+      }}
     >
       {/* Header */}
       <Box display="flex" justifyContent="space-between" alignItems="center">
@@ -98,7 +165,7 @@ export default function SideBar({ textColor }) {
           </Typography>
         </Box>
 
-        {/* Upload Button */}
+        {/* Upload Button - Now supports multiple */}
         <Button
           component="label"
           size="small"
@@ -119,34 +186,97 @@ export default function SideBar({ textColor }) {
             type="file"
             hidden
             accept=".pdf"
-            onChange={(e) => setSelectedFile(e.target.files[0])}
+            onChange={handleFileSelect}
             ref={fileInputRef}
+            multiple // Add this for multiple file selection
           />
         </Button>
       </Box>
 
-      {/* Confirm Upload */}
-      {selectedFile && (
-        <Button
-          size="small"
-          onClick={handleUpload}
-          disabled={uploading}
-          sx={{
-            color: "#2A2A2A",
-            textTransform: "none",
-            display: "flex",
-            alignItems: "center",
-            gap: 1,
-          }}
-        >
-          {uploading && <CircularProgress size={16} />}
-          {uploading ? "Uploading & Embedding..." : "Confirm Upload"}
-        </Button>
+      {/* Selected Files List */}
+      {selectedFiles.length > 0 && (
+        <Box sx={{ mt: 1 }}>
+          <Typography fontFamily="MadeTommy" fontSize={11} color="text.secondary" mb={1}>
+            Selected files ({selectedFiles.length}):
+          </Typography>
+          <List dense sx={{ maxHeight: "150px", overflow: "auto", bgcolor: "#f9f9f9", borderRadius: 1 }}>
+            {selectedFiles.map((file, index) => (
+              <ListItem key={index} dense>
+                <ListItemText
+                  primary={
+                    <Typography fontFamily="MadeTommy" fontSize={11}>
+                      {file.name}
+                    </Typography>
+                  }
+                  secondary={
+                    uploadProgress[file.name] && (
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 1, mt: 0.5 }}>
+                        <CircularProgress 
+                          size={12} 
+                          variant={uploadProgress[file.name].status === 'completed' ? "determinate" : "indeterminate"}
+                          value={uploadProgress[file.name].progress}
+                        />
+                        <Typography fontFamily="MadeTommy" fontSize={9}>
+                          {uploadProgress[file.name].status === 'completed' 
+                            ? 'Uploaded' 
+                            : uploadProgress[file.name].status === 'error'
+                            ? 'Failed'
+                            : 'Uploading...'}
+                        </Typography>
+                      </Box>
+                    )
+                  }
+                />
+                <ListItemSecondaryAction>
+                  <IconButton
+                    edge="end"
+                    size="small"
+                    onClick={() => {
+                      const newFiles = [...selectedFiles];
+                      newFiles.splice(index, 1);
+                      setSelectedFiles(newFiles);
+                    }}
+                  >
+                    <DeleteIcon fontSize="small" />
+                  </IconButton>
+                </ListItemSecondaryAction>
+              </ListItem>
+            ))}
+          </List>
+          
+          {/* Upload Button for multiple files */}
+          <Button
+            fullWidth
+            size="small"
+            onClick={handleUpload}
+            disabled={uploading || selectedFiles.length === 0}
+            sx={{
+              mt: 1,
+              color: "#2A2A2A",
+              textTransform: "none",
+              display: "flex",
+              alignItems: "center",
+              gap: 1,
+              backgroundColor: "#D9FFEA",
+              "&:hover": {
+                backgroundColor: "#D9FFEA",
+              },
+              "&:disabled": {
+                backgroundColor: "#f0f0f0",
+              },
+            }}
+          >
+            {uploading && <CircularProgress size={16} />}
+            {uploading 
+              ? `Uploading ${selectedFiles.length} files...` 
+              : `Upload ${selectedFiles.length} file${selectedFiles.length > 1 ? 's' : ''}`}
+          </Button>
+        </Box>
       )}
 
       {/* Search */}
       <TextField
-        placeholder="Search"
+        placeholder="Search PDFs"
         variant="filled"
         size="small"
         value={searchTerm}
@@ -169,37 +299,67 @@ export default function SideBar({ textColor }) {
         }}
       />
 
-      {/* File List (no background, no borders) */}
-      <Box sx={{ height: 250, overflowY: "auto" }}>
-        {filteredFiles.map((file) => (
-          <Box
-            key={file.id}
-            display="flex"
-            justifyContent="space-between"
-            alignItems="center"
-            mb={1}
+      {/* File List */}
+      <Box sx={{ flex: 1, overflowY: "auto" }}>
+        {filteredFiles.length === 0 ? (
+          <Typography 
+            fontFamily="MadeTommy" 
+            fontSize={12} 
+            color="text.secondary" 
+            textAlign="center"
+            sx={{ mt: 4 }}
           >
-            <Typography fontFamily="MadeTommy" fontSize={13}>
-              {file.name}
-            </Typography>
-
-            <Button
-              disableRipple
-              disableElevation
-              onClick={() => handleDelete(file.id)}
+            {searchTerm ? "No files match your search" : "No PDFs uploaded yet"}
+          </Typography>
+        ) : (
+          filteredFiles.map((file) => (
+            <Box
+              key={file.id}
+              display="flex"
+              justifyContent="space-between"
+              alignItems="center"
+              mb={1}
               sx={{
-                minWidth: "auto",
-                padding: 0,
-                color: "#2A2A2A",
-                backgroundColor: "transparent",
-                "&:hover": { backgroundColor: "transparent" },
-                "&:active": { backgroundColor: "transparent" },
+                cursor: "pointer",
+                padding: "8px 12px",
+                borderRadius: 1,
+                "&:hover": {
+                  backgroundColor: "#f5f5f5",
+                },
               }}
+              onClick={() => handlePDFClick(file)}
             >
-              ✕
-            </Button>
-          </Box>
-        ))}
+              <Box>
+                <Typography fontFamily="MadeTommy" fontSize={13}>
+                  {file.name}
+                </Typography>
+                {file.chunks > 0 && (
+                  <Typography fontFamily="MadeTommy" fontSize={9} color="text.secondary">
+                    {file.chunks} chunks
+                  </Typography>
+                )}
+              </Box>
+
+              <Button
+                disableRipple
+                disableElevation
+                onClick={(e) => handleDelete(file.id, e)}
+                sx={{
+                  minWidth: "auto",
+                  padding: 0,
+                  color: "#2A2A2A",
+                  backgroundColor: "transparent",
+                  "&:hover": { 
+                    backgroundColor: "transparent",
+                    color: "#ff4444",
+                  },
+                }}
+              >
+                ✕
+              </Button>
+            </Box>
+          ))
+        )}
       </Box>
     </Box>
   );
