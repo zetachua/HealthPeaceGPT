@@ -1,54 +1,92 @@
-import fs from "fs/promises";
-import { pdfToPng } from "pdf-to-png-converter";
-import tesseract from "node-tesseract-ocr";
-import mammoth from "mammoth";
+import fs from 'fs-extra';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import { v4 as uuidv4 } from 'uuid';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-const OCR_CONFIG = {
-  lang: "eng",
-  oem: 1,
-  psm: 6, // Single uniform block – perfect for medical reports
-};
+const execAsync = promisify(exec);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-async function runOcrOnPdfBuffer(buffer) {
-  console.log("OCR fallback: Converting protected PDF to images + native Tesseract");
-
-  // Convert PDF buffer to array of PNG page buffers (high quality)
-  const pngPages = await pdfToPng(buffer, {
-    disableFontFace: false,
-    useSystemFonts: true,
-    viewportScale: 3.0, // High resolution for clear text
-    outputFormat: "buffer", // Returns Buffer[]
-  });
-
-  let fullText = "";
-  for (let i = 0; i < pngPages.length; i++) {
-    const pageBuffer = pngPages[i].content; // PNG Buffer
-
-    const text = await tesseract.recognize(pageBuffer, OCR_CONFIG);
-    fullText += text.trim() + "\n\n--- Page " + (i + 1) + " ---\n\n";
-
-    console.log(`OCR done for page ${i + 1}/${pngPages.length}`);
-  }
-
-  return fullText.trim();
+// Dynamic import for CommonJS module
+async function loadPdfParse() {
+  const pdfParseModule = await import('pdf-parse');
+  return pdfParseModule.default || pdfParseModule;
 }
 
-export async function extractText(filePath, mimetype, buffer) {
-  if (!mimetype) throw new Error("Missing mimetype");
+export async function extractText(filePath, mimeType, buffer) {
+  try {
+    console.log(`Extracting text from: ${filePath}, MIME: ${mimeType}`);
+    
+    if (mimeType !== 'application/pdf') {
+      throw new Error(`Unsupported file type: ${mimeType}. Only PDFs are supported.`);
+    }
 
-  if (mimetype === "application/pdf") {
-    // For these protected reports, skip native text check – go straight to OCR
-    return await runOcrOnPdfBuffer(buffer);
+    // Try pdf-parse first
+    try {
+      const pdfParse = await loadPdfParse();
+      const data = await pdfParse(buffer);
+      
+      if (data.text && data.text.trim().length > 0) {
+        console.log(`PDF extracted successfully via pdf-parse. Text length: ${data.text.length}`);
+        return data.text;
+      } else {
+        console.log('PDF appears to be empty or protected');
+        throw new Error('Protected or image-based PDF');
+      }
+    } catch (pdfParseError) {
+      console.log('pdf-parse failed, trying simpler extraction...');
+      
+      // Fallback: Try a simpler regex-based extraction for basic PDFs
+      return extractTextSimple(buffer);
+    }
+    
+  } catch (error) {
+    console.error('Extract text error:', error.message);
+    throw new Error(`Failed to extract text from PDF: ${error.message}`);
   }
+}
 
-  if (mimetype === "text/plain") {
-    return buffer.toString("utf-8").trim();
+// Simple fallback extraction for basic PDFs
+function extractTextSimple(buffer) {
+  try {
+    // Convert buffer to string and look for text streams
+    const bufferStr = buffer.toString('latin1');
+    
+    // Common PDF text patterns
+    const textMatches = [];
+    
+    // Look for text in parentheses (common in PDFs)
+    const parenMatches = bufferStr.match(/\(([^)]+)\)/g);
+    if (parenMatches) {
+      textMatches.push(...parenMatches.map(m => m.slice(1, -1)));
+    }
+    
+    // Look for TJ/Tj operators (text showing operators)
+    const tjMatches = bufferStr.match(/\[(.*?)\]/g);
+    if (tjMatches) {
+      textMatches.push(...tjMatches.map(m => m.slice(1, -1)));
+    }
+    
+    // Join all found text
+    const extractedText = textMatches.join(' ').replace(/\\\n/g, ' ').replace(/\\\r/g, ' ');
+    
+    if (extractedText.trim().length > 0) {
+      console.log(`Simple extraction successful. Text length: ${extractedText.length}`);
+      return extractedText;
+    }
+    
+    throw new Error('No text could be extracted');
+    
+  } catch (simpleError) {
+    console.error('Simple extraction failed:', simpleError.message);
+    throw new Error('PDF appears to be protected or image-based. Please upload a text-based PDF.');
   }
+}
 
-  if (mimetype.includes("word") || mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
-    const result = await mammoth.extractRawText({ path: filePath });
-    return result.value.trim();
-  }
-
-  throw new Error(`Unsupported file type: ${mimetype}`);
+// Optional OCR function (keep this if you need it)
+async function extractTextWithOCR(filePath, buffer) {
+  // ... (same OCR code as before if you need it)
+  throw new Error('OCR not configured. Please upload a text-based PDF instead.');
 }
