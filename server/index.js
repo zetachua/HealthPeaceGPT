@@ -4,13 +4,20 @@ import express from "express";
 import cors from "cors";
 import fs from "fs-extra";
 import { v4 as uuidv4 } from "uuid";
-import {extractText} from "./utils/extractText.js";
+import path from "path";
+import { fileURLToPath } from "url";
+import { extractText } from "./utils/extractText.js";
 import { loadKnowledge, saveKnowledge } from "./utils/knowledgeStore.js";
-import {chunkText} from "./utils/chunkText.js";
+import { chunkText } from "./utils/chunkText.js";
 import { cosineSimilarity, embed } from "./utils/embedding.js";
-console.log("ENV LOADED:", process.env.OPENAI_API_KEY?.slice(0, 5));
 
 import OpenAI from "openai";
+
+// Get __dirname equivalent in ES modules
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+console.log("ENV LOADED:", process.env.OPENAI_API_KEY?.slice(0, 5));
 
 const app = express();
 app.use(cors());
@@ -20,39 +27,23 @@ const client = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
+// Configure multer for file uploads
+const upload = multer({ 
+  dest: 'uploads/',
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit
+  }
+});
 
-// 2. Configure Multer to handle file uploads
-// Note: This simple configuration saves the file directly to memory (not recommended for production)
-// For development, we'll keep it simple for now, but usually you'd configure disk storage.
-const upload = multer({ dest: 'uploads/' }); 
-// If you don't want to actually save the file yet:
-// const upload = multer({ storage: multer.memoryStorage() });
+// Ensure uploads directory exists
+fs.ensureDirSync('uploads');
 
-
+// Root endpoint
 app.get("/", (req, res) => {
   res.send("Server is running 👍");
 });
 
-// 3. ADD THE POST /upload ROUTE
-// 'file' must match the name used in formData.append("file", selectedFile) in your React code
-// app.post("/upload", upload.single("file"), (req, res) => {
-//   if (!req.file) {
-//     return res.status(400).send("No file uploaded.");
-//   }
-  
-//   // In a real application, you would process or save req.file here.
-//   // req.file contains information about the uploaded file.
-  
-//   console.log(`Received file: ${req.file.originalname}`); // Check your server terminal!
-
-//   // Send a success response back to the frontend
-//   res.status(200).json({ 
-//     message: "File uploaded successfully!", 
-//     id: Date.now(), // Use a temporary ID for testing
-//     name: req.file.originalname // Send back the filename for your frontend to display
-//   });
-// });
-
+// Upload endpoint
 app.post("/upload", upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
@@ -63,8 +54,9 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     const filePath = req.file.path;
     const fileName = req.file.originalname;
     const buffer = await fs.readFile(filePath);
+    
     // 1. Extract raw text
-    const rawText = await extractText(filePath, req.file.mimetype,buffer);
+    const rawText = await extractText(filePath, req.file.mimetype, buffer);
 
     // 2. Chunk text
     const chunks = chunkText(rawText);
@@ -92,7 +84,11 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     });
     await saveKnowledge(knowledge);
 
-    // 5. Cleanup uploaded file
+    // 5. Save the actual PDF file for viewing (optional)
+    const pdfStoragePath = path.join('uploads', `${fileId}.pdf`);
+    await fs.copy(filePath, pdfStoragePath);
+
+    // 6. Cleanup temporary uploaded file
     await fs.remove(filePath);
 
     res.status(200).json({
@@ -103,34 +99,127 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
   } catch (err) {
     console.error("Upload failed:", err);
+    // Cleanup on error
+    if (req.file && req.file.path) {
+      await fs.remove(req.file.path).catch(() => {});
+    }
     res.status(500).json({ error: "File processing failed" });
   }
 });
 
-
-// 4. ADD THE DELETE ROUTE (for testing the frontend logic)
+// Delete endpoint
 app.delete("/delete/:id", async (req, res) => {
-  const knowledge = await loadKnowledge();
-  const updated = knowledge.filter(f => f.id !== req.params.id);
-  await saveKnowledge(updated);
-  res.json({ success: true });
+  try {
+    const knowledge = await loadKnowledge();
+    const fileToDelete = knowledge.find(f => f.id === req.params.id);
+    
+    if (!fileToDelete) {
+      return res.status(404).json({ error: "File not found" });
+    }
+
+    const updated = knowledge.filter(f => f.id !== req.params.id);
+    await saveKnowledge(updated);
+
+    // Also delete the stored PDF file if it exists
+    const pdfPath = path.join('uploads', `${req.params.id}.pdf`);
+    if (await fs.pathExists(pdfPath)) {
+      await fs.remove(pdfPath);
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Delete error:", err);
+    res.status(500).json({ error: "Failed to delete file" });
+  }
 });
 
+// Get files list
 app.get("/files", async (req, res) => {
-  const knowledge = await loadKnowledge();
-  res.json(
-    knowledge.map(file => ({
+  try {
+    const knowledge = await loadKnowledge();
+    res.json(
+      knowledge.map(file => ({
+        id: file.id,
+        name: file.name,
+        chunks: file.chunks?.length || 0,
+        createdAt: file.createdAt
+      }))
+    );
+  } catch (err) {
+    console.error("Files list error:", err);
+    res.status(500).json({ error: "Failed to fetch files" });
+  }
+});
+
+// Serve PDF files
+app.get("/pdf/:id", async (req, res) => {
+  try {
+    const pdfPath = path.join(__dirname, 'uploads', `${req.params.id}.pdf`);
+    
+    // Check if file exists
+    if (!await fs.pathExists(pdfPath)) {
+      return res.status(404).json({ 
+        error: "PDF file not found",
+        message: "The PDF file may have been deleted or not saved properly"
+      });
+    }
+
+    // Check if it's a valid PDF file
+    const stats = await fs.stat(pdfPath);
+    if (stats.size === 0) {
+      return res.status(404).json({ error: "PDF file is empty" });
+    }
+
+    // Set appropriate headers for PDF
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${req.params.id}.pdf"`);
+    
+    // Stream the PDF file
+    const fileStream = fs.createReadStream(pdfPath);
+    fileStream.pipe(res);
+    
+    // Handle stream errors
+    fileStream.on('error', (err) => {
+      console.error("PDF stream error:", err);
+      res.status(500).json({ error: "Failed to stream PDF" });
+    });
+
+  } catch (err) {
+    console.error("PDF serve error:", err);
+    res.status(500).json({ error: "Failed to serve PDF" });
+  }
+});
+
+// Alternative endpoint to get PDF content as text
+app.get("/pdf-text/:id", async (req, res) => {
+  try {
+    const knowledge = await loadKnowledge();
+    const file = knowledge.find(f => f.id === req.params.id);
+    
+    if (!file) {
+      return res.status(404).json({ error: "PDF not found in database" });
+    }
+
+    // Return the extracted text from chunks
+    const fullText = file.chunks?.map(c => c.text).join('\n\n') || "";
+    
+    res.json({
       id: file.id,
       name: file.name,
-      chunks: file.chunks.length
-    }))
-  );
+      content: fullText,
+      chunksCount: file.chunks?.length || 0
+    });
+
+  } catch (err) {
+    console.error("PDF text serve error:", err);
+    res.status(500).json({ error: "Failed to get PDF text" });
+  }
 });
 
-
+// Chat endpoint
 async function generateAnswer(context, question) {
   const response = await client.responses.create({
-    model: "gpt-5",
+    model: "gpt-4",
     input: [
       {
         role: "system",
@@ -149,9 +238,8 @@ async function generateAnswer(context, question) {
         - Analyze only the key, relevant findings for each organ/system or health topic.
         - Keep each point concise (1–2 sentences max).
         - Use a calm, conversational tone, as if explaining to a non-health expert.
-        - Include follow-up recommendations or uncertainties inline, but do not add speculation.
-          `
-  },
+        - Include follow-up recommendations or uncertainties inline, but do not add speculation.`
+      },
       {
         role: "user",
         content: `Context:\n${context}\n\nQuestion:\n${question} Please answer clearly and concisely using bullet points where helpful. If there is uncertainty, explicitly state it.`
@@ -193,7 +281,7 @@ app.post("/chat", async (req, res) => {
 
     const context = topChunks.map(c => c.text).join("\n\n");
 
-    // 5. Call OpenAI (GPT-5)
+    // 5. Call OpenAI (GPT-4)
     const answer = await generateAnswer(context, message);
 
     res.json({ answer });
@@ -204,5 +292,48 @@ app.post("/chat", async (req, res) => {
   }
 });
 
+// Health check endpoint
+app.get("/health", (req, res) => {
+  res.json({ 
+    status: "healthy", 
+    timestamp: new Date().toISOString(),
+    uploadsDir: path.join(__dirname, 'uploads'),
+    knowledgePath: path.join(__dirname, 'data', 'knowledge.json')
+  });
+});
+
+// Cleanup endpoint (optional, for development)
+app.post("/cleanup", async (req, res) => {
+  try {
+    // Clean empty or orphaned files in uploads
+    const files = await fs.readdir('uploads');
+    for (const file of files) {
+      const filePath = path.join('uploads', file);
+      const stats = await fs.stat(filePath);
+      if (stats.size === 0) {
+        await fs.remove(filePath);
+        console.log(`Removed empty file: ${file}`);
+      }
+    }
+    res.json({ message: "Cleanup completed" });
+  } catch (err) {
+    console.error("Cleanup error:", err);
+    res.status(500).json({ error: "Cleanup failed" });
+  }
+});
+
+// Error handling middleware
+app.use((err, req, res, next) => {
+  console.error("Server error:", err);
+  res.status(500).json({ 
+    error: "Internal server error",
+    message: err.message 
+  });
+});
+
 const PORT = process.env.PORT || 5001;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Uploads directory: ${path.join(__dirname, 'uploads')}`);
+  console.log(`Knowledge data: ${path.join(__dirname, 'data', 'knowledge.json')}`);
+});
