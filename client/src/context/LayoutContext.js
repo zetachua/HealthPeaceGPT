@@ -1,4 +1,7 @@
-import React, { createContext, useState, useContext } from 'react';
+import React, { createContext, useState, useContext, useEffect } from 'react';
+
+// ⚠️ UPDATE THIS WITH YOUR IP ADDRESS
+const API_BASE_URL = "http://192.168.0.125:5001";
 
 const LayoutContext = createContext();
 
@@ -6,7 +9,28 @@ export const useLayout = () => useContext(LayoutContext);
 
 export const LayoutProvider = ({ children }) => {
   const [isPDFOpen, setIsPDFOpen] = useState(false);
-  const [selectedPDF, setSelectedPDF] = useState(null); // {id, name}
+  const [selectedPDF, setSelectedPDF] = useState(null);
+  const [files, setFiles] = useState([]);
+  const [loadingFiles, setLoadingFiles] = useState(true);
+
+  // Fetch files function
+  const fetchFiles = async () => {
+    try {
+      setLoadingFiles(true);
+      const res = await fetch(`${API_BASE_URL}/files`);
+      const data = await res.json();
+      setFiles(data);
+    } catch (error) {
+      console.error("Failed to fetch files:", error);
+    } finally {
+      setLoadingFiles(false);
+    }
+  };
+
+  // Initial fetch
+  useEffect(() => {
+    fetchFiles();
+  }, []);
 
   const openPDF = (pdf) => {
     setSelectedPDF(pdf);
@@ -18,6 +42,11 @@ export const LayoutProvider = ({ children }) => {
     setSelectedPDF(null);
   };
 
+  // Add function to refresh files (call this after upload)
+  const refreshFiles = () => {
+    fetchFiles();
+  };
+
   return (
     <LayoutContext.Provider
       value={{
@@ -25,6 +54,9 @@ export const LayoutProvider = ({ children }) => {
         selectedPDF,
         openPDF,
         closePDF,
+        files,
+        loadingFiles,
+        refreshFiles,
       }}
     >
       {children}
