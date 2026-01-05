@@ -11,7 +11,6 @@ import {
   AppBar,
   Toolbar,
 } from "@mui/material";
-import MicIcon from '@mui/icons-material/Mic';
 import SendIcon from '@mui/icons-material/Send';
 import MenuIcon from '@mui/icons-material/Menu';
 import SideBar from "./SideBar";
@@ -57,7 +56,8 @@ export default function Chatbot() {
       }, speed);
 
       return () => clearInterval(interval);
-    }, [text, speed]);
+      // eslint-disable-next-line
+    }, [ speed]);
 
     return <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{displayed}</ReactMarkdown>;
   }
