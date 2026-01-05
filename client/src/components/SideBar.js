@@ -357,7 +357,7 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
           <Box display="flex" justifyContent="space-between" alignItems="center" mb={1}>
             <Typography fontFamily="MadeTommy" fontSize={11} color="text.secondary">
               {uploading 
-                ? `Uploading...` 
+                ? `Uploading and Embedding Data...` 
                 : `${selectedFiles.length} file(s) selected`}
             </Typography>
             {!uploading && (
@@ -482,7 +482,7 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
                 },
               }}
             >
-              {uploading ? "Uploading..." : "Cancel"}
+              {uploading ? "Processing..." : "Cancel"}
             </Button>
             
             <Button

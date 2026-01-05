@@ -20,15 +20,12 @@ const __dirname = path.dirname(__filename);
 console.log("ENV LOADED:", process.env.OPENAI_API_KEY?.slice(0, 5));
 
 const app = express();
+
 app.use(cors({
-  origin: [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "https://server-floral-firefly-2320.fly.dev"
-  ],
-  methods: ["GET", "POST", "DELETE"],
-  allowedHeaders: ["Content-Type"]
+  origin: 'https://zetachua.github.io',
+  methods: ['GET','POST'],
 }));
+
 app.use(express.json());
 
 const client = new OpenAI({
