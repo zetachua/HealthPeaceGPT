@@ -57,7 +57,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
     const fileId = uuidv4();
     const filePath = req.file.path;
-    const fileName = req.file.originalname;
+    const fileName = req.file.originalname || `unnamed-${fileId}.pdf`;;
     const buffer = await fs.readFile(filePath);
 
     // 1. Extract raw text

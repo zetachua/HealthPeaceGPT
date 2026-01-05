@@ -17,7 +17,7 @@ import { API_BASE_URL } from "./Chatbot";
 
 export default function SideBar({ textColor, onMobileUploadComplete, setIsUploading }) {
   const fileInputRef = useRef(null);
-  const { openPDF, files, refreshFiles } = useLayout();
+  const { openPDF, files, refreshFiles,setFiles} = useLayout();
 
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [searchTerm, setSearchTerm] = useState("");

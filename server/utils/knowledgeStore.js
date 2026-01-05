@@ -16,19 +16,29 @@ export async function loadKnowledge() {
 
 
 // Save uploaded file to knowledge.json
-export async function savePdfToKnowledge(file) {
+export async function savePdfToKnowledge(file, chunks = []) {
+  // Load existing knowledge
   const knowledge = await fs.readJson(KNOWLEDGE_PATH).catch(() => []);
-  
+
+  // Filter out invalid chunks
+  const validChunks = (chunks || [])
+    .filter(c => c && c.toString().trim().length > 0)
+    .map(c => ({
+      id: crypto.randomUUID(),
+      text: c.toString(),
+      embedding: null, // or generate embedding later
+    }));
+
   const newEntry = {
     id: crypto.randomUUID(),
     name: file.originalname,
-    data: file.buffer.toString('base64'), // store PDF as base64
-    chunks: 0, // optional, update as needed
+    data: file.buffer ? file.buffer.toString('base64') : null, // store PDF base64 if buffer exists
+    chunks: validChunks,
     createdAt: new Date().toISOString()
   };
 
   knowledge.push(newEntry);
-  
+
   await fs.writeJson(KNOWLEDGE_PATH, knowledge, { spaces: 2 });
 
   return newEntry;
