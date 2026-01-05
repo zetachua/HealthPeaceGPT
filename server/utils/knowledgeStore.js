@@ -4,6 +4,8 @@ import path from "path";
 import { exec } from 'child_process';
 import util from 'util';
 const execAsync = util.promisify(exec);
+import simpleGit from "simple-git";
+const git = simpleGit();
 
 const KNOWLEDGE_PATH = path.resolve("data/knowledge.json");
 
@@ -47,20 +49,14 @@ export async function savePdfToKnowledge(file, chunks = []) {
 // Commit + push + fly deploy
 export async function commitAndDeploy() {
   try {
-    console.log("Running git add...");
-    await execAsync('git add data/knowledge.json');
-
-    console.log("Running git commit...");
-    await execAsync('git commit -m "Add new PDFs"');
-
-    console.log("Running git push...");
-    await execAsync('git push');
-
-    console.log("Running fly deploy...");
-    await execAsync('fly deploy');
-
-    console.log("✅ Knowledge updated and deployed successfully!");
-  } catch (err) {
-    console.error("❌ Failed to commit/deploy:", err.message);
-  }
+ 
+     // Commit via simple-git
+     await git.add("data/knowledge.json");
+     await git.commit("Update knowledge.json via CLI");
+     await git.push();
+     
+     console.log("Knowledge saved and pushed!");
+   } catch (err) {
+     console.error("Failed to save knowledge.json:", err);
+   }
 }
