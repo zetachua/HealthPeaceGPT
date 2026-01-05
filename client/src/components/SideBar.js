@@ -297,8 +297,8 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
   };
 
   const filteredFiles = files.filter((file) =>
-    file.name.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+    file.name?.toLowerCase().includes(searchTerm.toLowerCase())
+  );  
 
   return (
     <Box
