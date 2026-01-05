@@ -1,8 +1,5 @@
 import React, { createContext, useState, useContext, useEffect } from 'react';
-
-// ⚠️ UPDATE THIS WITH YOUR IP ADDRESS
-const API_BASE_URL = "http://192.168.0.125:5001";
-
+import { API_BASE_URL } from '../components/Chatbot';
 const LayoutContext = createContext();
 
 export const useLayout = () => useContext(LayoutContext);

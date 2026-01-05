@@ -21,8 +21,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useLayout } from "../context/LayoutContext";
 
-// ⚠️ UPDATE THIS WITH YOUR IP ADDRESS
-const API_BASE_URL = 'https://server-floral-firefly-2320.fly.dev';
+export const API_BASE_URL = 'https://server-floral-firefly-2320.fly.dev';
 
 export default function Chatbot() {
   const [isUploading, setIsUploading] = useState(false);
