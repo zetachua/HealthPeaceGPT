@@ -430,7 +430,7 @@ export default function Chatbot() {
             >
               <SendIcon fontSize="small" />
             </IconButton>
-            <IconButton 
+            {/* <IconButton 
               color="secondary"
               size="small"
               sx={{
@@ -441,7 +441,7 @@ export default function Chatbot() {
               }}
             >
               <MicIcon fontSize="small" />
-            </IconButton>
+            </IconButton> */}
           </Box>
 
           {/* Footer text - responsive sizing */}
