@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from "uuid";
 import path from "path";
 import { fileURLToPath } from "url";
 import { extractText } from "./utils/extractText.js";
-import { loadKnowledge, saveKnowledge } from "./utils/knowledgeStore.js";
+import { loadKnowledge,savePdfToKnowledge,commitAndDeploy } from "./utils/knowledgeStore.js";
 import { chunkText } from "./utils/chunkText.js";
 import { cosineSimilarity, embed } from "./utils/embedding.js";
 
@@ -23,7 +23,7 @@ const app = express();
 
 app.use(cors({
   origin: 'https://zetachua.github.io',
-  methods: ['GET','POST'],
+  methods: ["GET", "POST", "DELETE", "OPTIONS"], // include DELETE
 }));
 
 app.use(express.json());
@@ -59,7 +59,7 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     const filePath = req.file.path;
     const fileName = req.file.originalname;
     const buffer = await fs.readFile(filePath);
-    
+
     // 1. Extract raw text
     const rawText = await extractText(filePath, req.file.mimetype, buffer);
 
@@ -75,9 +75,12 @@ app.post("/upload", upload.single("file"), async (req, res) => {
         embedding: await embed(chunk),
       }))
     );
-    
 
-    // 4. Save to knowledge.json
+    // 4. Save the actual PDF file for viewing
+    const pdfStoragePath = path.join('uploads', `${fileId}.pdf`);
+    await fs.copy(filePath, pdfStoragePath);
+
+    // 5. Save to knowledge.json
     const knowledge = await loadKnowledge();
     knowledge.push({
       id: fileId,
@@ -85,13 +88,12 @@ app.post("/upload", upload.single("file"), async (req, res) => {
       createdAt: new Date().toISOString(),
       chunks: embeddedChunks
     });
-    await saveKnowledge(knowledge);
+    await savePdfToKnowledge(knowledge);
 
-    // 5. Save the actual PDF file for viewing (optional)
-    const pdfStoragePath = path.join('uploads', `${fileId}.pdf`);
-    await fs.copy(filePath, pdfStoragePath);
+    // 6. Commit & deploy in background (non-blocking)
+    commitAndDeploy().catch(err => console.error(err));
 
-    // 6. Cleanup temporary uploaded file
+    // 7. Cleanup temporary uploaded file
     await fs.remove(filePath);
 
     res.status(200).json({
@@ -102,10 +104,12 @@ app.post("/upload", upload.single("file"), async (req, res) => {
 
   } catch (err) {
     console.error("Upload failed:", err);
+
     // Cleanup on error
     if (req.file && req.file.path) {
       await fs.remove(req.file.path).catch(() => {});
     }
+
     res.status(500).json({ error: "File processing failed" });
   }
 });

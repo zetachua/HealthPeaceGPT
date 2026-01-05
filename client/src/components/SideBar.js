@@ -263,18 +263,33 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
 
   // Delete file from server
   const handleDelete = async (id, e) => {
+    
     e.preventDefault();
     e.stopPropagation();
+  
+    // Optimistically remove the file from UI
+    const originalFiles = [...files];
+    setFiles(prev => prev.filter(f => f.id !== id));
+  
     try {
-      await fetch(`${API_BASE_URL}/delete/${id}`, {
+      const response = await fetch(`${API_BASE_URL}/delete/${id}`, {
         method: "DELETE",
       });
-      
+  
+      if (!response.ok) {
+        throw new Error(`Server error: ${response.status}`);
+      }
+  
+      // Refresh files from server just in case
       await refreshFiles();
     } catch (error) {
       console.error("Delete failed:", error);
+  
+      // Rollback if delete fails
+      setFiles(originalFiles);
     }
   };
+  
 
   // Handle PDF click
   const handlePDFClick = (file) => {
@@ -645,6 +660,7 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
+                  if (!window.confirm(`Are you sure you want to delete "${file.name}"?`)) return;
                   handleDelete(file.id, e);
                 }}
                 sx={{
