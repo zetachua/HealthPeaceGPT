@@ -285,77 +285,73 @@ export default function Chatbot() {
               margin: 'auto',
             }}
           >
-            {messages.map((msg, i) => (
-              <Box
-                key={i}
-                display="flex"
-                justifyContent={msg.role === "user" ? "flex-end" : "flex-start"}
-                mb={2}
-              >
-                <Paper
-                  elevation={1}
-                  sx={{
-                    p: { xs: 1.5, md: 1.5 },
-                    maxWidth: { xs: '85%', md: '80%' },
-                    bgcolor: msg.role === "user" ? mintColor : "#F8F9FA",
-                    borderRadius: 3,
-                    boxShadow: 1,
-                  }}
+           {messages.map((msg, i) => {
+              const isLast = i === messages.length - 1; // check if this is the last message
+              return (
+                <Box
+                  key={i}
+                  display="flex"
+                  justifyContent={msg.role === "user" ? "flex-end" : "flex-start"}
+                  mb={2}
                 >
-                  {msg.role === "assistant" ? (
-                    msg.isLoading ? (
-                      <Typography 
-                        fontFamily="MadeTommy" 
-                        fontSize={{ xs: '13px', md: '13px' }}
-                        color={textColor}
-                      >
+                  <Paper
+                    elevation={1}
+                    sx={{
+                      p: { xs: 1.5, md: 1.5 },
+                      maxWidth: { xs: '85%', md: '80%' },
+                      bgcolor: msg.role === "user" ? mintColor : "#F8F9FA",
+                      borderRadius: 3,
+                      boxShadow: 1,
+                    }}
+                  >
+                    {msg.role === "assistant" ? (
+                      msg.isLoading ? (
+                        <Typography 
+                          fontFamily="MadeTommy" 
+                          fontSize={{ xs: '13px', md: '13px' }}
+                          color={textColor}
+                        >
+                          {msg.content}
+                        </Typography>
+                      ) : isLast ? (
+                        // Only last AI message gets typewriter
+                        <TypewriterMarkdown
+                          text={msg.content}
+                          components={{
+                            p: ({ children }) => (
+                              <Typography paragraph fontFamily="MadeTommy" fontSize={{ xs: '13px', md: '13px' }} color={textColor} sx={{ mb: 1 }}>
+                                {children}
+                              </Typography>
+                            ),
+                            ul: ({ children }) => <Box component="ul" sx={{ pl: 1.5, my: 1 }}>{children}</Box>,
+                            ol: ({ children }) => <Box component="ol" sx={{ pl: 1.5, my: 1 }}>{children}</Box>,
+                            li: ({ children }) => (
+                              <Typography component="li" fontFamily="MadeTommy" fontSize={{ xs: '13px', md: '13px' }} color={textColor} sx={{ mb: 0.3 }}>
+                                {children}
+                              </Typography>
+                            ),
+                            strong: ({ children }) => <Typography fontWeight="bold" component="span">{children}</Typography>,
+                            h1: ({ children }) => <Typography variant="h6" fontWeight="bold" mt={2} mb={1} fontFamily="MadeTommy">{children}</Typography>,
+                            h2: ({ children }) => <Typography variant="subtitle1" fontWeight="bold" mt={1.5} mb={0.5} fontFamily="MadeTommy">{children}</Typography>,
+                          }}
+                          speed={20}
+                        />
+                      ) : (
+                        // All previous messages render normally
+                        <Typography fontFamily="MadeTommy" fontSize={{ xs: '13px', md: '13px' }} color={textColor}>
+                          {msg.content}
+                        </Typography>
+                      )
+                    ) : (
+                      <Typography fontFamily="MadeTommy" fontSize={{ xs: '13px', md: '13px' }} color={textColor}>
                         {msg.content}
                       </Typography>
-                    ) : (
-                      <TypewriterMarkdown
-                        text={msg.content}
-                        components={{
-                          p: ({ children }) => (
-                            <Typography 
-                              paragraph 
-                              fontFamily="MadeTommy" 
-                              fontSize={{ xs: '13px', md: '13px' }}
-                              color={textColor} 
-                              sx={{ mb: 1 }}
-                            >
-                              {children}
-                            </Typography>
-                          ),
-                          ul: ({ children }) => <Box component="ul" sx={{ pl: 1.5, my: 1 }}>{children}</Box>,
-                          ol: ({ children }) => <Box component="ol" sx={{ pl: 1.5, my: 1 }}>{children}</Box>,
-                          li: ({ children }) => (
-                            <Typography component="li" fontFamily="MadeTommy" fontSize={{ xs: '13px', md: '13px' }} color={textColor} sx={{ mb: 0.3 }}>
-                              {children}
-                            </Typography>
-                          ),
-                          strong: ({ children }) => <Typography fontWeight="bold" component="span">{children}</Typography>,
-                          h1: ({ children }) => (
-                            <Typography variant="h6" fontWeight="bold" mt={2} mb={1} fontFamily="MadeTommy">{children}</Typography>
-                          ),
-                          h2: ({ children }) => (
-                            <Typography variant="subtitle1" fontWeight="bold" mt={1.5} mb={0.5} fontFamily="MadeTommy">{children}</Typography>
-                          ),
-                        }}
-                        speed={20}
-                      />
-                    )
-                  ) : (
-                    <Typography 
-                      fontFamily="MadeTommy" 
-                      fontSize={{ xs: '13px', md: '13px' }}
-                      color={textColor}
-                    >
-                      {msg.content}
-                    </Typography>
-                  )}
-                </Paper>
-              </Box>
-            ))}
+                    )}
+                  </Paper>
+                </Box>
+              );
+            })}
+
             <div ref={messagesEndRef} />
           </Paper>
 
