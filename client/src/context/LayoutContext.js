@@ -52,6 +52,7 @@ export const LayoutProvider = ({ children }) => {
         openPDF,
         closePDF,
         files,
+        setFiles,
         loadingFiles,
         refreshFiles,
       }}
