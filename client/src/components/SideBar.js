@@ -13,9 +13,7 @@ import {
 import { FileUpload, Delete as DeleteIcon, Close as CloseIcon } from "@mui/icons-material";
 import { useState, useRef, useEffect } from "react";
 import { useLayout } from "../context/LayoutContext";
-
-// ⚠️ UPDATE THIS WITH YOUR IP ADDRESS
-const API_BASE_URL = "http://192.168.0.125:5001";
+import { API_BASE_URL } from "./Chatbot";
 
 export default function SideBar({ textColor, onMobileUploadComplete, setIsUploading }) {
   const fileInputRef = useRef(null);

@@ -2,8 +2,7 @@ import React from "react";
 import { Box, IconButton, Typography } from "@mui/material";
 import { ArrowBack as ArrowBackIcon } from "@mui/icons-material";
 import { useLayout } from "../context/LayoutContext";
-
-const API_BASE_URL = "http://192.168.0.125:5001";
+import { API_BASE_URL } from "./Chatbot";
 
 export default function PDFViewer() {
   const { selectedPDF, closePDF } = useLayout();
