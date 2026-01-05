@@ -20,7 +20,15 @@ const __dirname = path.dirname(__filename);
 console.log("ENV LOADED:", process.env.OPENAI_API_KEY?.slice(0, 5));
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "https://server-floral-firefly-2320.fly.dev"
+  ],
+  methods: ["GET", "POST", "DELETE"],
+  allowedHeaders: ["Content-Type"]
+}));
 app.use(express.json());
 
 const client = new OpenAI({
@@ -63,16 +71,14 @@ app.post("/upload", upload.single("file"), async (req, res) => {
     console.log("Number of chunks:", chunks.length);
 
     // 3. Embed each chunk
-    const embeddedChunks = [];
-    for (const chunk of chunks) {
-      const embedding = await embed(chunk);
-      console.log("Chunk embedding length:", embedding.length);
-      embeddedChunks.push({
+    const embeddedChunks = await Promise.all(
+      chunks.map(async (chunk) => ({
         id: uuidv4(),
         text: chunk,
-        embedding
-      });
-    }
+        embedding: await embed(chunk),
+      }))
+    );
+    
 
     // 4. Save to knowledge.json
     const knowledge = await loadKnowledge();

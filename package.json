@@ -6,5 +6,6 @@
     },
     "dependencies": {
         "multer": "^2.0.2"
-    }
+    },
+    "homepage": "https://zetachua.github.io/HealthPeaceGPT"
 }

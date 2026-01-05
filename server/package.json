@@ -28,5 +28,8 @@
     "pdfjs-dist": "^5.4.449",
     "tesseract.js": "^7.0.0",
     "uuid": "^13.0.0"
+  },
+  "devDependencies": {
+    "@flydotio/dockerfile": "^0.7.10"
   }
 }

@@ -22,7 +22,7 @@ import remarkGfm from 'remark-gfm';
 import { useLayout } from "../context/LayoutContext";
 
 // ⚠️ UPDATE THIS WITH YOUR IP ADDRESS
-const API_BASE_URL = "http://192.168.0.125:5001";
+const API_BASE_URL = 'https://server-floral-firefly-2320.fly.dev';
 
 export default function Chatbot() {
   const [isUploading, setIsUploading] = useState(false);
