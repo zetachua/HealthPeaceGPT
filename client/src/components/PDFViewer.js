@@ -1,53 +1,82 @@
 import React from "react";
 import { Box, IconButton, Typography } from "@mui/material";
-import { Close as CloseIcon } from "@mui/icons-material";
+import { ArrowBack as ArrowBackIcon } from "@mui/icons-material";
 import { useLayout } from "../context/LayoutContext";
+
+const API_BASE_URL = "http://192.168.0.125:5001";
 
 export default function PDFViewer() {
   const { selectedPDF, closePDF } = useLayout();
 
   if (!selectedPDF) return null;
 
-  const pdfUrl = `http://localhost:5001/pdf/${selectedPDF.id}`;
+  const pdfUrl = `${API_BASE_URL}/pdf/${selectedPDF.id}`;
 
   return (
     <Box
       sx={{
-        width: "600px", // Fixed width instead of percentage
+        width: { xs: "100%", md: "600px" },
         height: "100vh",
         display: "flex",
         flexDirection: "column",
         backgroundColor: "white",
         boxShadow: "0px 0px 10px rgba(0,0,0,0.1)",
-        borderLeft: "1px solid #E9ECEF",
+        borderLeft: { xs: "none", md: "1px solid #E9ECEF" },
+        position: "relative",
+        zIndex: 9999,
       }}
     >
-      {/* PDF Viewer Header */}
+      {/* PDF Viewer Header with Back Button */}
       <Box
         sx={{
           display: "flex",
-          justifyContent: "space-between",
           alignItems: "center",
           p: 2,
           borderBottom: "1px solid #E9ECEF",
+          backgroundColor: "white",
+          position: "sticky",
+          top: 0,
+          zIndex: 10000,
         }}
       >
-        <Typography fontFamily="MadeTommy" fontSize={14} fontWeight="bold" noWrap>
+        {/* Back Button */}
+        <IconButton 
+          onClick={closePDF} 
+          size="small"
+          sx={{ mr: 2 }}
+        >
+          <ArrowBackIcon fontSize="small" />
+        </IconButton>
+        
+        {/* PDF Name */}
+        <Typography 
+          fontFamily="MadeTommy" 
+          fontSize={14} 
+          fontWeight="bold" 
+          noWrap
+          sx={{ 
+            flex: 1,
+            overflow: "hidden",
+            textOverflow: "ellipsis"
+          }}
+        >
           {selectedPDF.name}
         </Typography>
-        <IconButton onClick={closePDF} size="small">
-          <CloseIcon fontSize="small" />
-        </IconButton>
       </Box>
 
       {/* PDF Embed */}
-      <Box sx={{ flex: 1, overflow: "hidden" }}>
-        <embed
+      <Box sx={{ 
+        flex: 1, 
+        overflow: "hidden",
+        WebkitOverflowScrolling: "touch",
+      }}>
+        <iframe
           src={pdfUrl}
-          type="application/pdf"
+          title={selectedPDF.name}
           width="100%"
           height="100%"
           style={{ border: "none" }}
+          allowFullScreen
         />
       </Box>
     </Box>
