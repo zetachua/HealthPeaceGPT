@@ -1,6 +1,19 @@
-import { CssBaseline, Box, Typography, TextField, IconButton, Paper } from "@mui/material";
+import { 
+  CssBaseline, 
+  Box, 
+  Typography, 
+  TextField, 
+  IconButton, 
+  Paper, 
+  useMediaQuery, 
+  useTheme,
+  Drawer,
+  AppBar,
+  Toolbar,
+} from "@mui/material";
 import MicIcon from '@mui/icons-material/Mic';
 import SendIcon from '@mui/icons-material/Send';
+import MenuIcon from '@mui/icons-material/Menu';
 import SideBar from "./SideBar";
 import PDFViewer from "./PDFViewer";
 import { useState, useRef, useEffect } from "react";
@@ -8,11 +21,18 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useLayout } from "../context/LayoutContext";
 
+// ⚠️ UPDATE THIS WITH YOUR IP ADDRESS
+const API_BASE_URL = "http://192.168.0.125:5001";
+
 export default function Chatbot() {
+  const [isUploading, setIsUploading] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState([]);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const messagesEndRef = useRef(null);
   const { isPDFOpen } = useLayout();
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
 
   const warmGreyColor = "#E9ECEF";
   const textColor = "#2A2A2A";
@@ -54,7 +74,7 @@ export default function Chatbot() {
     setMessages(prev => [...prev, loadingMessage]);
 
     try {
-      const res = await fetch("http://localhost:5001/chat", {
+      const res = await fetch(`${API_BASE_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: input }),
@@ -76,12 +96,92 @@ export default function Chatbot() {
     }
   };
 
+  const handleDrawerToggle = () => {
+    if (isUploading) {
+      console.log("Preventing drawer close during upload");
+      return;
+    }
+    setMobileOpen(!mobileOpen);
+  };
+
+  const drawer = (
+    <Box sx={{ width: 280 }}>
+      <SideBar 
+        textColor={textColor} 
+        setIsUploading={setIsUploading}
+        onMobileUploadComplete={() => {
+          setTimeout(() => {
+            setMobileOpen(false);
+            setIsUploading(false);
+          }, 500);
+        }}
+      />
+    </Box>
+  );
+
+  // Don't show backdrop on mobile
+  const showBackdrop = isPDFOpen && !isMobile;
+
   return (
     <>
       <CssBaseline />
       
-      {/* Subtle backdrop overlay when PDF is open */}
-      {isPDFOpen && (
+      {/* Mobile App Bar - Hide when PDF is open so X button is visible */}
+      {isMobile && !isPDFOpen && (
+        <AppBar 
+          position="fixed" 
+          sx={{ 
+            display: { xs: 'block', md: 'none' },
+            backgroundColor: 'white',
+            color: textColor,
+            boxShadow: '0 1px 3px rgba(0,0,0,0.1)'
+          }}
+        >
+          <Toolbar sx={{ minHeight: '56px' }}>
+            <IconButton
+              color="inherit"
+              edge="start"
+              onClick={handleDrawerToggle}
+              sx={{ mr: 2 }}
+            >
+              <MenuIcon />
+            </IconButton>
+            <Typography 
+              fontFamily="MadeTommy" 
+              variant="body1" 
+              sx={{ flexGrow: 1 }}
+            >
+              HealthPeaceGPT
+            </Typography>
+          </Toolbar>
+        </AppBar>
+      )}
+
+      {/* Mobile Sidebar Drawer */}
+      <Drawer
+        variant="temporary"
+        open={mobileOpen}
+        onClose={handleDrawerToggle}
+        ModalProps={{ 
+          keepMounted: true,
+          disableBackdropClick: isUploading,
+          disableEscapeKeyDown: isUploading,
+        }}
+        sx={{
+          display: { xs: 'block', md: 'none' },
+          '& .MuiDrawer-paper': { 
+            boxSizing: 'border-box', 
+            width: 280,
+            backgroundColor: 'white',
+            position: 'fixed',
+          },
+        }}
+      >
+        {drawer}
+      </Drawer>
+
+      {/* Subtle backdrop overlay when PDF is open (desktop only) */}
+      {showBackdrop && (
         <Box
           sx={{
             position: "fixed",
@@ -93,58 +193,97 @@ export default function Chatbot() {
             zIndex: 0,
             opacity: isPDFOpen ? 1 : 0,
             transition: "opacity 0.3s ease",
-            pointerEvents: "none", // Allow clicks to pass through
+            pointerEvents: "none",
           }}
         />
       )}
 
-      {/* Root container - Fixed width sidebar + flexible content */}
-      <Box display="flex" height="100vh" width="100vw" bgcolor={warmGreyColor} position="relative">
-        {/* Fixed Sidebar - Always 280px */}
-        <Box sx={{ flexShrink: 0, zIndex: 2 }}>
-          <SideBar textColor={textColor} />
+      {/* Root container - Responsive layout */}
+      <Box 
+        sx={{
+          display: 'flex',
+          height: '100vh',
+          width: '100vw',
+          bgcolor: warmGreyColor,
+          flexDirection: { xs: 'column', md: 'row' },
+          position: 'relative',
+          pt: { xs: isPDFOpen ? 0 : '56px', md: 0 },
+        }}
+      >
+        {/* Sidebar - hidden on mobile (shown in drawer), visible on desktop */}
+        <Box
+          sx={{
+            display: { xs: 'none', md: 'block' },
+            flexShrink: 0,
+            zIndex: 2,
+          }}
+        >
+          <SideBar 
+            textColor={textColor}
+            setIsUploading={setIsUploading}
+          />
         </Box>
 
-        {/* PDF Viewer - Appears when needed with smooth animation */}
+        {/* PDF Viewer - full screen on mobile */}
         {isPDFOpen && (
-          <Box sx={{ flexShrink: 0, zIndex: 2 }}>
+          <Box
+            sx={{
+              width: { xs: '100%', md: '600px' },
+              display: 'flex',
+              flexDirection: 'column',
+              flexShrink: 0,
+              zIndex: 1000,
+              height: { xs: '100vh', md: '100vh' },
+              position: 'relative',
+            }}
+          >
             <PDFViewer />
           </Box>
         )}
 
-        {/* Chat Window - Takes remaining space with smooth transition */}
+        {/* Chat Window - Centered layout with smaller text */}
         <Box 
           sx={{ 
             flex: 1,
             display: "flex",
             flexDirection: "column",
-            p: 4,
+            p: { xs: 2, md: 4 },
             overflow: "hidden",
-            minWidth: 0,
-            transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
-            position: "relative",
+            width: '100%',
+            position: 'relative',
             zIndex: 1,
+            height: { xs: isPDFOpen ? '100vh' : 'calc(100vh - 56px)', md: '100vh' },
           }}
         >
-          <Typography fontFamily="MadeTommy" variant="caption" color={textColor} mb={3}>
-            Brian's ChatGPT
-          </Typography>
+          {/* Header - Show on both mobile and desktop */}
+          {!isPDFOpen && (
+            <Typography 
+              fontFamily="MadeTommy" 
+              variant={isMobile ? "body2" : "caption"} 
+              color={textColor} 
+              mb={isMobile ? 2 : 3}
+              sx={{ 
+                fontSize: { xs: '11px', md: '12px' },
+              }}
+            >
+              Brian's ChatGPT
+            </Typography>
+          )}
 
-          {/* Chat messages container */}
+          {/* Chat messages container - CENTERED with smaller text */}
           <Paper
             sx={{
               flex: 1,
               display: "flex",
               flexDirection: "column",
-              p: 2,
+              p: { xs: 2, md: 2 },
               boxShadow: 'none',
-              mb: 2,
+              mb: { xs: 2, md: 2 },
               width: "100%",
-              maxWidth: "800px",
-              margin: 'auto',
               backgroundColor: 'transparent',
               overflowY: "auto",
-              transition: "width 0.3s ease",
+              maxWidth: { xs: '100%', md: '800px' },
+              margin: 'auto',
             }}
           >
             {messages.map((msg, i) => (
@@ -157,20 +296,20 @@ export default function Chatbot() {
                 <Paper
                   elevation={1}
                   sx={{
-                    p: 2,
-                    maxWidth: "80%",
+                    p: { xs: 1.5, md: 1.5 },
+                    maxWidth: { xs: '85%', md: '80%' },
                     bgcolor: msg.role === "user" ? mintColor : "#F8F9FA",
                     borderRadius: 3,
                     boxShadow: 1,
-                    transition: "transform 0.2s ease",
-                    "&:hover": {
-                      transform: "translateY(-1px)",
-                    }
                   }}
                 >
                   {msg.role === "assistant" ? (
                     msg.isLoading ? (
-                      <Typography fontFamily="MadeTommy" fontSize={15} variant="caption" color={textColor} >
+                      <Typography 
+                        fontFamily="MadeTommy" 
+                        fontSize={{ xs: '13px', md: '13px' }}
+                        color={textColor}
+                      >
                         {msg.content}
                       </Typography>
                     ) : (
@@ -178,30 +317,40 @@ export default function Chatbot() {
                         text={msg.content}
                         components={{
                           p: ({ children }) => (
-                            <Typography paragraph fontFamily="MadeTommy" fontSize={15} color={textColor} sx={{ mb: 1.5 }}>
+                            <Typography 
+                              paragraph 
+                              fontFamily="MadeTommy" 
+                              fontSize={{ xs: '13px', md: '13px' }}
+                              color={textColor} 
+                              sx={{ mb: 1 }}
+                            >
                               {children}
                             </Typography>
                           ),
-                          ul: ({ children }) => <Box component="ul" sx={{ pl: 2, my: 1.5 }}>{children}</Box>,
-                          ol: ({ children }) => <Box component="ol" sx={{ pl: 2, my: 1.5 }}>{children}</Box>,
+                          ul: ({ children }) => <Box component="ul" sx={{ pl: 1.5, my: 1 }}>{children}</Box>,
+                          ol: ({ children }) => <Box component="ol" sx={{ pl: 1.5, my: 1 }}>{children}</Box>,
                           li: ({ children }) => (
-                            <Typography component="li" fontFamily="MadeTommy" fontSize={15} color={textColor} sx={{ mb: 0.5 }}>
+                            <Typography component="li" fontFamily="MadeTommy" fontSize={{ xs: '13px', md: '13px' }} color={textColor} sx={{ mb: 0.3 }}>
                               {children}
                             </Typography>
                           ),
                           strong: ({ children }) => <Typography fontWeight="bold" component="span">{children}</Typography>,
                           h1: ({ children }) => (
-                            <Typography variant="h6" fontWeight="bold" mt={3} mb={1.5} fontFamily="MadeTommy">{children}</Typography>
+                            <Typography variant="h6" fontWeight="bold" mt={2} mb={1} fontFamily="MadeTommy">{children}</Typography>
                           ),
                           h2: ({ children }) => (
-                            <Typography variant="subtitle1" fontWeight="bold" mt={2.5} mb={1} fontFamily="MadeTommy">{children}</Typography>
+                            <Typography variant="subtitle1" fontWeight="bold" mt={1.5} mb={0.5} fontFamily="MadeTommy">{children}</Typography>
                           ),
                         }}
                         speed={20}
                       />
                     )
                   ) : (
-                    <Typography fontFamily="MadeTommy" fontSize={15} color={textColor}>
+                    <Typography 
+                      fontFamily="MadeTommy" 
+                      fontSize={{ xs: '13px', md: '13px' }}
+                      color={textColor}
+                    >
                       {msg.content}
                     </Typography>
                   )}
@@ -211,18 +360,18 @@ export default function Chatbot() {
             <div ref={messagesEndRef} />
           </Paper>
 
-          {/* Input bar with subtle animation */}
+          {/* Input bar - CENTERED and aligned with chat container */}
           <Box 
             display="flex" 
             alignItems="center" 
             gap={0.2} 
-            width="100%" 
-            maxWidth="800px" 
+            width="100%"
+            maxWidth={{ xs: '100%', md: '800px' }}
             margin="auto"
             sx={{
               transition: "transform 0.3s ease",
               "&:focus-within": {
-                transform: "translateY(-2px)",
+                transform: { xs: 'none', md: 'translateY(-2px)' },
               }
             }}
           >
@@ -241,10 +390,19 @@ export default function Chatbot() {
               }}
               InputProps={{
                 disableUnderline: true,
-                style: {
-                  fontSize: '12px',
-                  padding: '0.7rem',
-                  textAlign: 'center',
+                sx: {
+                  fontFamily: "MadeTommy",
+                  padding: { xs: '0.4rem', md: '0.5rem' },
+                  "& input": {
+                    fontSize: { xs: '12px', md: '11px' },
+                    textAlign: 'left',
+                    fontFamily: "MadeTommy",
+                    paddingLeft: { xs: '0.5rem', md: '0.8rem' },
+                    '&::placeholder': {
+                      fontSize: { xs: '12px', md: '11px' },
+                      opacity: 0.7,
+                    }
+                  },
                 },
               }}
               sx={{
@@ -253,48 +411,53 @@ export default function Chatbot() {
                 bgcolor: "white",
                 transition: "all 0.2s ease",
                 "&:hover": {
-                  boxShadow: "0 2px 8px rgba(0,0,0,0.05)",
+                  boxShadow: { xs: 'none', md: "0 2px 8px rgba(0,0,0,0.05)" },
                 },
                 "&:focus-within": {
-                  boxShadow: "0 4px 12px rgba(0,0,0,0.08)",
+                  boxShadow: { xs: 'none', md: "0 4px 12px rgba(0,0,0,0.08)" },
                 }
               }}
             />
             <IconButton 
               color="primary" 
               onClick={sendMessage}
+              size="small"
               sx={{
                 transition: "transform 0.2s ease",
                 "&:hover": {
-                  transform: "scale(1.1)",
+                  transform: { xs: 'none', md: "scale(1.1)" },
                 }
               }}
             >
-              <SendIcon />
+              <SendIcon fontSize="small" />
             </IconButton>
             <IconButton 
               color="secondary"
+              size="small"
               sx={{
                 transition: "transform 0.2s ease",
                 "&:hover": {
-                  transform: "scale(1.1)",
+                  transform: { xs: 'none', md: "scale(1.1)" },
                 }
               }}
             >
-              <MicIcon />
+              <MicIcon fontSize="small" />
             </IconButton>
           </Box>
 
+          {/* Footer text - responsive sizing */}
           <Typography 
             fontFamily="MadeTommy" 
             color="#7A7A7A" 
             textAlign={'center'} 
-            sx={{ paddingTop: '1rem' }} 
-            fontSize={10} 
+            sx={{ 
+              paddingTop: { xs: '0.8rem', md: '1rem' },
+              fontSize: { xs: '9px', md: '10px' }
+            }} 
             opacity={0.6} 
             mt={1}
           >
-            Brian's ChatGPT can make mistakes. Check important info.
+            HealthPeaceGPT can make mistakes. Check important info.
           </Typography>
         </Box>
       </Box>
