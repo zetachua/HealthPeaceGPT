@@ -1,3 +1,4 @@
+import { supabase } from "../supabase";
 import {
   Box,
   Typography,
@@ -124,16 +125,36 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
           errorMessage: ""
         });
 
-        const formData = new FormData();
-        formData.append("file", file);
-
-        console.log(`Uploading to: ${API_BASE_URL}/upload`);
+        // const formData = new FormData();
+        // formData.append("file", file);
 
         try {
-          const response = await fetch(`${API_BASE_URL}/upload`, {
+          const filePath = `pdfs/${crypto.randomUUID()}-${file.name}`;
+
+          const { error: uploadError } = await supabase.storage
+            .from("pdfs")
+            .upload(filePath, file, {
+              contentType: "application/pdf"
+            });
+          
+          if (uploadError) {
+            throw uploadError;
+          }
+          
+          // tell backend to ingest
+          const response = await fetch(`${API_BASE_URL}/ingest`, {
             method: "POST",
-            body: formData,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              storagePath: filePath,
+              originalName: file.name
+            })
           });
+          
+          if (!response.ok) {
+            throw new Error("Ingest failed");
+          }
+          
 
           console.log(`Response:`, response.status, response.statusText);
 

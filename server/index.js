@@ -1,3 +1,4 @@
+import { createClient } from "@supabase/supabase-js";
 import "dotenv/config";
 import multer from "multer";
 import express from "express";
@@ -7,7 +8,6 @@ import { v4 as uuidv4 } from "uuid";
 import path from "path";
 import { fileURLToPath } from "url";
 import { extractText } from "./utils/extractText.js";
-import { loadKnowledge,savePdfToKnowledge,commitAndDeploy } from "./utils/knowledgeStore.js";
 import { chunkText } from "./utils/chunkText.js";
 import { cosineSimilarity, embed } from "./utils/embedding.js";
 
@@ -49,172 +49,228 @@ app.get("/", (req, res) => {
 });
 
 // Upload endpoint
-app.post("/upload", upload.single("file"), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
-    }
+// app.post("/upload", upload.single("file"), async (req, res) => {
+//   try {
+//     if (!req.file) {
+//       return res.status(400).json({ error: "No file uploaded" });
+//     }
 
-    const fileId = uuidv4();
-    const filePath = req.file.path;
-    const fileName = req.file.originalname || `unnamed-${fileId}.pdf`;;
-    const buffer = await fs.readFile(filePath);
+//     const fileId = uuidv4();
+//     const filePath = req.file.path;
+//     const fileName = req.file.originalname || `unnamed-${fileId}.pdf`;;
+//     const buffer = await fs.readFile(filePath);
 
-    // 1. Extract raw text
-    const rawText = await extractText(filePath, req.file.mimetype, buffer);
+//     // 1. Extract raw text
+//     const rawText = await extractText(filePath, req.file.mimetype, buffer);
 
-    // 2. Chunk text
-    const chunks = chunkText(rawText);
-    console.log("Number of chunks:", chunks.length);
+//     // 2. Chunk text
+//     const chunks = chunkText(rawText);
+//     console.log("Number of chunks:", chunks.length);
 
-    // 3. Embed each chunk
-    const embeddedChunks = await Promise.all(
-      chunks.map(async (chunk) => ({
-        id: uuidv4(),
-        text: chunk,
-        embedding: await embed(chunk),
-      }))
-    );
+//     // 3. Embed each chunk
+//     const embeddedChunks = await Promise.all(
+//       chunks.map(async (chunk) => ({
+//         id: uuidv4(),
+//         text: chunk,
+//         embedding: await embed(chunk),
+//       }))
+//     );
 
-    // 4. Save the actual PDF file for viewing
-    const pdfStoragePath = path.join('uploads', `${fileId}.pdf`);
-    await fs.copy(filePath, pdfStoragePath);
+//     // 4. Save the actual PDF file for viewing
+//     const pdfStoragePath = path.join('uploads', `${fileId}.pdf`);
+//     await fs.copy(filePath, pdfStoragePath);
 
-    // 5. Save to knowledge.json
-    const knowledge = await loadKnowledge();
-    knowledge.push({
-      id: fileId,
-      name: fileName,
-      createdAt: new Date().toISOString(),
-      chunks: embeddedChunks
-    });
-    await savePdfToKnowledge(knowledge);
+//     // 5. Save to knowledge.json
+//     const knowledge = await loadKnowledge();
+//     knowledge.push({
+//       id: fileId,
+//       name: fileName,
+//       createdAt: new Date().toISOString(),
+//       chunks: embeddedChunks
+//     });
+//     await savePdfToKnowledge(knowledge);
 
-    // 6. Commit & deploy in background (non-blocking)
-    commitAndDeploy().catch(err => console.error(err));
+//     // 6. Commit & deploy in background (non-blocking)
+//     commitAndDeploy().catch(err => console.error(err));
 
-    // 7. Cleanup temporary uploaded file
-    await fs.remove(filePath);
+//     // 7. Cleanup temporary uploaded file
+//     await fs.remove(filePath);
 
-    res.status(200).json({
-      id: fileId,
-      name: fileName,
-      chunks: embeddedChunks.length
-    });
+//     res.status(200).json({
+//       id: fileId,
+//       name: fileName,
+//       chunks: embeddedChunks.length
+//     });
 
-  } catch (err) {
-    console.error("Upload failed:", err);
+//   } catch (err) {
+//     console.error("Upload failed:", err);
 
-    // Cleanup on error
-    if (req.file && req.file.path) {
-      await fs.remove(req.file.path).catch(() => {});
-    }
+//     // Cleanup on error
+//     if (req.file && req.file.path) {
+//       await fs.remove(req.file.path).catch(() => {});
+//     }
 
-    res.status(500).json({ error: "File processing failed" });
-  }
-});
+//     res.status(500).json({ error: "File processing failed" });
+//   }
+// });
 
 // Delete endpoint
-app.delete("/delete/:id", async (req, res) => {
-  try {
-    const knowledge = await loadKnowledge();
-    const fileToDelete = knowledge.find(f => f.id === req.params.id);
+// app.delete("/delete/:id", async (req, res) => {
+//   try {
+//     const knowledge = await loadKnowledge();
+//     const fileToDelete = knowledge.find(f => f.id === req.params.id);
     
-    if (!fileToDelete) {
-      return res.status(404).json({ error: "File not found" });
-    }
+//     if (!fileToDelete) {
+//       return res.status(404).json({ error: "File not found" });
+//     }
 
-    const updated = knowledge.filter(f => f.id !== req.params.id);
-    await saveKnowledge(updated);
+//     const updated = knowledge.filter(f => f.id !== req.params.id);
+//     await saveKnowledge(updated);
 
-    // Also delete the stored PDF file if it exists
-    const pdfPath = path.join('uploads', `${req.params.id}.pdf`);
-    if (await fs.pathExists(pdfPath)) {
-      await fs.remove(pdfPath);
-    }
+//     // Also delete the stored PDF file if it exists
+//     const pdfPath = path.join('uploads', `${req.params.id}.pdf`);
+//     if (await fs.pathExists(pdfPath)) {
+//       await fs.remove(pdfPath);
+//     }
 
-    res.json({ success: true });
-  } catch (err) {
-    console.error("Delete error:", err);
-    res.status(500).json({ error: "Failed to delete file" });
-  }
+//     res.json({ success: true });
+//   } catch (err) {
+//     console.error("Delete error:", err);
+//     res.status(500).json({ error: "Failed to delete file" });
+//   }
+// });
+
+app.delete("/delete/:id", async (req, res) => {
+  const { id } = req.params;
+
+  const { data: doc } = await supabase
+    .from("documents")
+    .select("storage_path")
+    .eq("id", id)
+    .single();
+
+  if (!doc) return res.sendStatus(404);
+
+  await supabase.storage
+    .from("pdfs")
+    .remove([doc.storage_path]);
+
+  await supabase
+    .from("documents")
+    .delete()
+    .eq("id", id);
+
+  res.sendStatus(204);
 });
+
 
 // Get files list
-app.get("/files", async (req, res) => {
-  try {
-    const knowledge = await loadKnowledge();
-    res.json(
-      knowledge.map(file => ({
-        id: file.id,
-        name: file.name,
-        chunks: file.chunks?.length || 0,
-        createdAt: file.createdAt
-      }))
-    );
-  } catch (err) {
-    console.error("Files list error:", err);
-    res.status(500).json({ error: "Failed to fetch files" });
-  }
-});
+// app.get("/files", async (req, res) => {
+//   try {
+//     const knowledge = await loadKnowledge();
+//     res.json(
+//       knowledge.map(file => ({
+//         id: file.id,
+//         name: file.name,
+//         chunks: file.chunks?.length || 0,
+//         createdAt: file.createdAt
+//       }))
+//     );
+//   } catch (err) {
+//     console.error("Files list error:", err);
+//     res.status(500).json({ error: "Failed to fetch files" });
+//   }
+// });
 
 // Serve PDF files
+// app.get("/pdf/:id", async (req, res) => {
+//   try {
+//     const pdfPath = path.join(__dirname, 'uploads', `${req.params.id}.pdf`);
+    
+//     // Check if file exists
+//     if (!await fs.pathExists(pdfPath)) {
+//       return res.status(404).json({ 
+//         error: "PDF file not found",
+//         message: "The PDF file may have been deleted or not saved properly"
+//       });
+//     }
+
+//     // Check if it's a valid PDF file
+//     const stats = await fs.stat(pdfPath);
+//     if (stats.size === 0) {
+//       return res.status(404).json({ error: "PDF file is empty" });
+//     }
+
+//     // Set appropriate headers for PDF
+//     res.setHeader('Content-Type', 'application/pdf');
+//     res.setHeader('Content-Disposition', `inline; filename="${req.params.id}.pdf"`);
+    
+//     // Stream the PDF file
+//     const fileStream = fs.createReadStream(pdfPath);
+//     fileStream.pipe(res);
+    
+//     // Handle stream errors
+//     fileStream.on('error', (err) => {
+//       console.error("PDF stream error:", err);
+//       res.status(500).json({ error: "Failed to stream PDF" });
+//     });
+
+//   } catch (err) {
+//     console.error("PDF serve error:", err);
+//     res.status(500).json({ error: "Failed to serve PDF" });
+//   }
+// });
+
 app.get("/pdf/:id", async (req, res) => {
-  try {
-    const pdfPath = path.join(__dirname, 'uploads', `${req.params.id}.pdf`);
-    
-    // Check if file exists
-    if (!await fs.pathExists(pdfPath)) {
-      return res.status(404).json({ 
-        error: "PDF file not found",
-        message: "The PDF file may have been deleted or not saved properly"
-      });
-    }
+  const { id } = req.params;
 
-    // Check if it's a valid PDF file
-    const stats = await fs.stat(pdfPath);
-    if (stats.size === 0) {
-      return res.status(404).json({ error: "PDF file is empty" });
-    }
+  const { data } = await supabase
+    .from("documents")
+    .select("storage_path")
+    .eq("id", id)
+    .single();
 
-    // Set appropriate headers for PDF
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${req.params.id}.pdf"`);
-    
-    // Stream the PDF file
-    const fileStream = fs.createReadStream(pdfPath);
-    fileStream.pipe(res);
-    
-    // Handle stream errors
-    fileStream.on('error', (err) => {
-      console.error("PDF stream error:", err);
-      res.status(500).json({ error: "Failed to stream PDF" });
-    });
+  const { data: signed } = await supabase.storage
+    .from("pdfs")
+    .createSignedUrl(data.storage_path, 60);
 
-  } catch (err) {
-    console.error("PDF serve error:", err);
-    res.status(500).json({ error: "Failed to serve PDF" });
-  }
+  res.redirect(signed.signedUrl);
 });
 
-// Alternative endpoint to get PDF content as text
+// Alternative endpoint to get PDF content as text (Supabase-native)
 app.get("/pdf-text/:id", async (req, res) => {
   try {
-    const knowledge = await loadKnowledge();
-    const file = knowledge.find(f => f.id === req.params.id);
-    
-    if (!file) {
-      return res.status(404).json({ error: "PDF not found in database" });
+    const { id } = req.params;
+
+    // 1. Fetch document metadata
+    const { data: document, error: docError } = await supabase
+      .from("documents")
+      .select("id, name")
+      .eq("id", id)
+      .single();
+
+    if (docError || !document) {
+      return res.status(404).json({ error: "PDF not found" });
     }
 
-    // Return the extracted text from chunks
-    const fullText = file.chunks?.map(c => c.text).join('\n\n') || "";
-    
+    // 2. Fetch all chunks for this document
+    const { data: chunks, error: chunkError } = await supabase
+      .from("chunks")
+      .select("text")
+      .eq("document_id", id)
+      .order("chunk_index", { ascending: true });
+
+    if (chunkError) {
+      throw chunkError;
+    }
+
+    const fullText = chunks.map(c => c.text).join("\n\n");
+
     res.json({
-      id: file.id,
-      name: file.name,
+      id: document.id,
+      name: document.name,
       content: fullText,
-      chunksCount: file.chunks?.length || 0
+      chunksCount: chunks.length
     });
 
   } catch (err) {
@@ -222,6 +278,7 @@ app.get("/pdf-text/:id", async (req, res) => {
     res.status(500).json({ error: "Failed to get PDF text" });
   }
 });
+
 
 // Chat endpoint
 async function generateAnswer(context, question) {
@@ -264,27 +321,31 @@ app.post("/chat", async (req, res) => {
     // 1. Embed user query
     const queryEmbedding = await embed(message);
 
-    // 2. Load knowledge
-    const knowledge = await loadKnowledge();
+    // 2. Load chunks from Supabase
+    const { data: chunks, error } = await supabase
+      .from("chunks")
+      .select("text, embedding");
 
-    // 3. Score all chunks
-    const scoredChunks = knowledge.flatMap(file =>
-      file.chunks
-        .filter(c => c.embedding && c.embedding.length > 0) // skip broken chunks
-        .map(chunk => ({
-          text: chunk.text,
-          score: cosineSimilarity(queryEmbedding, chunk.embedding)
-        }))
-    );
-    
-    // 4. Top K matches
+    if (error) {
+      throw error;
+    }
+
+    // 3. Score chunks
+    const scoredChunks = chunks
+      .filter(c => Array.isArray(c.embedding) && c.embedding.length > 0)
+      .map(c => ({
+        text: c.text,
+        score: cosineSimilarity(queryEmbedding, c.embedding)
+      }));
+
+    // 4. Select top K
     const topChunks = scoredChunks
       .sort((a, b) => b.score - a.score)
       .slice(0, 5);
 
     const context = topChunks.map(c => c.text).join("\n\n");
 
-    // 5. Call OpenAI (GPT-4)
+    // 5. Generate answer
     const answer = await generateAnswer(context, message);
 
     res.json({ answer });
@@ -324,6 +385,85 @@ app.post("/cleanup", async (req, res) => {
     res.status(500).json({ error: "Cleanup failed" });
   }
 });
+
+
+export const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+app.post("/ingest", async (req, res) => {
+  try {
+    const { storagePath, originalName } = req.body;
+    const docId = uuidv4();
+
+    // 1. Download PDF from Supabase
+    const { data, error } = await supabase.storage
+      .from("pdfs")
+      .download(storagePath);
+
+    if (error) throw error;
+
+    const buffer = Buffer.from(await data.arrayBuffer());
+
+    // 2. Extract text
+    const rawText = await extractText(buffer);
+
+    // 3. Chunk (limit!)
+    const chunks = chunkText(rawText).slice(0, 100);
+
+    // 4. Insert document
+    await supabase.from("documents").insert({
+      id: docId,
+      name: originalName,
+      storage_path: storagePath
+    });
+
+    // 5. Embed + insert chunks
+    const rows = [];
+    for (const chunk of chunks) {
+      rows.push({
+        id: uuidv4(),
+        document_id: docId,
+        text: chunk,
+        embedding: await embed(chunk)
+      });
+    }
+
+    await supabase.from("chunks").insert(rows);
+
+    res.json({
+      id: docId,
+      name: originalName,
+      chunks: rows.length
+    });
+  } catch (err) {
+    console.error("Ingest failed:", err);
+    res.status(500).json({ error: "Ingest failed" });
+  }
+});
+
+app.get("/files", async (req, res) => {
+  const { data, error } = await supabase
+    .from("documents")
+    .select(`
+      id,
+      name,
+      chunks(count)
+    `);
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  res.json(
+    data.map(d => ({
+      id: d.id,
+      name: d.name,
+      chunks: d.chunks[0]?.count ?? 0
+    }))
+  );
+});
+
+
 
 // Error handling middleware
 app.use((err, req, res, next) => {
