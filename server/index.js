@@ -7,7 +7,7 @@ import fs from "fs-extra";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
 import { fileURLToPath } from "url";
-import { extractText } from "./utils/extractText.js";
+import { extractTextWithOCR } from "./utils/extractText.js";
 import { chunkText } from "./utils/chunkText.js";
 import { cosineSimilarity, embed } from "./utils/embedding.js";
 
@@ -407,7 +407,7 @@ app.post("/ingest", async (req, res) => {
     const buffer = Buffer.from(await data.arrayBuffer());
 
     // 2. Extract text
-    const rawText = await extractText(buffer);
+    const rawText = await extractTextWithOCR(buffer);
 
     // 3. Chunk (limit!)
     const chunks = chunkText(rawText).slice(0, 100);
