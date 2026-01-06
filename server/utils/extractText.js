@@ -48,7 +48,7 @@ export async function extractText(filePath, mimeType, buffer) {
 }
 
 // OCR extraction using tesseract.js
-async function extractTextWithOCR(filePath, buffer) {
+export async function extractTextWithOCR(filePath, buffer) {
   try {
     console.log('Running OCR on PDF...');
 
