@@ -59,7 +59,8 @@ export default function Chatbot() {
       }, speed);
   
       return () => clearInterval(interval);
-    }, [text]);
+// eslint-disable-next-line
+    }, [messages]);
   
     return (
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
