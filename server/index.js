@@ -140,29 +140,89 @@ app.get("/", (req, res) => {
 //   }
 // });
 
+// REPLACE your existing /delete/:id endpoint with this:
 app.delete("/delete/:id", async (req, res) => {
   const { id } = req.params;
 
-  const { data: doc } = await supabase
-    .from("documents")
-    .select("storage_path")
-    .eq("id", id)
-    .single();
+  try {
+    // Get document info using correct column name
+    const { data: doc, error: fetchError } = await supabase
+      .from("documents")
+      .select("dropbox_path")
+      .eq("id", id)
+      .single();
 
-  if (!doc) return res.sendStatus(404);
+    if (fetchError || !doc) {
+      console.error("Document not found:", fetchError);
+      return res.sendStatus(404);
+    }
 
-  await supabase.storage
-    .from("pdfs")
-    .remove([doc.storage_path]);
+    // Delete from storage
+    if (doc.dropbox_path) {
+      const { error: storageError } = await supabase.storage
+        .from("pdfs")
+        .remove([doc.dropbox_path]);
 
-  await supabase
-    .from("documents")
-    .delete()
-    .eq("id", id);
+      if (storageError) {
+        console.error("Storage delete error:", storageError);
+      }
+    }
 
-  res.sendStatus(204);
+    // Delete chunks first (foreign key constraint)
+    await supabase
+      .from("chunks")
+      .delete()
+      .eq("document_id", id);
+
+    // Delete document record
+    const { error: deleteError } = await supabase
+      .from("documents")
+      .delete()
+      .eq("id", id);
+
+    if (deleteError) {
+      console.error("Document delete error:", deleteError);
+      return res.status(500).json({ error: deleteError.message });
+    }
+
+    res.sendStatus(204);
+  } catch (err) {
+    console.error("Delete failed:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
+// REPLACE your existing /pdf/:id endpoint with this:
+app.get("/pdf/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Get document info using correct column name
+    const { data, error } = await supabase
+      .from("documents")
+      .select("dropbox_path")
+      .eq("id", id)
+      .single();
+
+    if (error || !data || !data.dropbox_path) {
+      return res.status(404).json({ error: "PDF not found" });
+    }
+
+    // Create signed URL
+    const { data: signed, error: signError } = await supabase.storage
+      .from("pdfs")
+      .createSignedUrl(data.dropbox_path, 60);
+
+    if (signError || !signed) {
+      return res.status(500).json({ error: "Failed to generate signed URL" });
+    }
+
+    res.redirect(signed.signedUrl);
+  } catch (err) {
+    console.error("PDF serve error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // Get files list
 // app.get("/files", async (req, res) => {
@@ -220,22 +280,6 @@ app.delete("/delete/:id", async (req, res) => {
 //     res.status(500).json({ error: "Failed to serve PDF" });
 //   }
 // });
-
-app.get("/pdf/:id", async (req, res) => {
-  const { id } = req.params;
-
-  const { data } = await supabase
-    .from("documents")
-    .select("storage_path")
-    .eq("id", id)
-    .single();
-
-  const { data: signed } = await supabase.storage
-    .from("pdfs")
-    .createSignedUrl(data.storage_path, 60);
-
-  res.redirect(signed.signedUrl);
-});
 
 // Alternative endpoint to get PDF content as text (Supabase-native)
 app.get("/pdf-text/:id", async (req, res) => {
@@ -393,27 +437,33 @@ export const supabase = createClient(
 );
 
 
-// REPLACE your /ingest endpoint with this unified endpoint
-// This handles file upload from frontend AND processing
 
 
 app.post("/upload-and-ingest", upload.single("file"), async (req, res) => {
+  let tempFilePath = null;
+  let storagePath = null;
+  let docId = null;
+  
   try {
     if (!req.file) {
       return res.status(400).json({ error: "No file uploaded" });
     }
 
-    const docId = uuidv4();
+    docId = uuidv4();
     const fileName = req.file.originalname || `unnamed-${docId}.pdf`;
-    const filePath = req.file.path;
+    tempFilePath = req.file.path;
 
-    console.log(`Starting upload and ingestion for: ${fileName}`);
+    console.log(`=== Starting upload for: ${fileName} ===`);
+    console.log(`Document ID: ${docId}`);
 
     // 1. Read the uploaded file
-    const buffer = await fs.readFile(filePath);
+    console.log('Step 1: Reading file...');
+    const buffer = await fs.readFile(tempFilePath);
+    console.log(`✓ File read: ${buffer.length} bytes`);
 
     // 2. Upload to Supabase storage
-    const storagePath = `pdfs/${docId}-${fileName}`;
+    console.log('Step 2: Uploading to Supabase storage...');
+    storagePath = `pdfs/${docId}-${fileName}`;
     const { error: uploadError } = await supabase.storage
       .from("pdfs")
       .upload(storagePath, buffer, {
@@ -423,11 +473,10 @@ app.post("/upload-and-ingest", upload.single("file"), async (req, res) => {
 
     if (uploadError) {
       console.error("Supabase upload error:", uploadError);
-      await fs.remove(filePath);
-      return res.status(500).json({ error: "Failed to upload to storage" });
+      throw new Error(`Storage upload failed: ${uploadError.message}`);
     }
 
-    console.log('✓ Uploaded to Supabase storage');
+    console.log(`✓ Uploaded to storage: ${storagePath}`);
 
     // 3. Extract text with OCR
     console.log('Extracting text...');
@@ -441,20 +490,26 @@ app.post("/upload-and-ingest", upload.single("file"), async (req, res) => {
     console.log(`✓ Processing ${chunks.length} chunks (out of ${allChunks.length} total)`);
 
     // 5. Insert document record
-    const { error: docError } = await supabase
+    const { data: docData, error: docError } = await supabase
       .from("documents")
       .insert({
         id: docId,
         name: fileName,
         storage_path: storagePath
-      });
+      })
+      .select()
+      .single();
 
     if (docError) {
       console.error("Document insert error:", docError);
+      console.error("Error details:", JSON.stringify(docError, null, 2));
       // Clean up storage
       await supabase.storage.from("pdfs").remove([storagePath]);
       await fs.remove(filePath);
-      return res.status(500).json({ error: "Failed to create document record" });
+      return res.status(500).json({ 
+        error: "Failed to create document record",
+        details: docError.message 
+      });
     }
 
     console.log('✓ Document record created');
@@ -498,9 +553,9 @@ app.post("/upload-and-ingest", upload.single("file"), async (req, res) => {
     }
 
     // 7. Clean up temporary file
-    await fs.remove(filePath);
+    await fs.remove(tempFilePath);
 
-    console.log(`✓ Upload and ingestion complete: ${allRows.length} chunks processed`);
+    console.log(`=== ✓ Upload complete: ${allRows.length} chunks processed ===`);
 
     res.json({
       id: docId,
@@ -510,11 +565,22 @@ app.post("/upload-and-ingest", upload.single("file"), async (req, res) => {
     });
 
   } catch (err) {
-    console.error("Upload and ingest failed:", err);
+    console.error("=== ✗ Upload and ingest failed ===");
+    console.error("Error:", err);
     
     // Cleanup on error
-    if (req.file && req.file.path) {
-      await fs.remove(req.file.path).catch(() => {});
+    if (tempFilePath) {
+      await fs.remove(tempFilePath).catch(() => {});
+    }
+    
+    // Clean up Supabase storage if it was created
+    if (storagePath) {
+      await supabase.storage.from("pdfs").remove([storagePath]).catch(() => {});
+    }
+    
+    // Clean up document record if it was created
+    if (docId) {
+      await supabase.from("documents").delete().eq("id", docId).catch(() => {});
     }
     
     res.status(500).json({ 
