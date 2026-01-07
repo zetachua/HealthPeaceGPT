@@ -44,24 +44,30 @@ export default function Chatbot() {
     scrollToBottom();
   }, [messages]);
 
-  function TypewriterMarkdown({ text="", components, speed = 1000 }) {
+  function TypewriterMarkdown({ text = "", components, speed = 20, onDone }) {
     const [displayed, setDisplayed] = useState("");
-
+  
     useEffect(() => {
       let i = 0;
       const interval = setInterval(() => {
         setDisplayed(text.slice(0, i + 1));
         i++;
-        if (i >= text.length) clearInterval(interval);
+        if (i >= text.length) {
+          clearInterval(interval);
+          onDone?.(); // mark as completed
+        }
       }, speed);
-
+  
       return () => clearInterval(interval);
-      // eslint-disable-next-line
-    }, [ speed]);
-
-    return <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>{displayed}</ReactMarkdown>;
+    }, [text]);
+  
+    return (
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+        {displayed}
+      </ReactMarkdown>
+    );
   }
-
+  
   const sendMessage = async () => {
     if (!input.trim()) return;
 
@@ -93,15 +99,18 @@ export default function Chatbot() {
       
       setMessages(prev =>
         prev.map(msg =>
-          msg.isLoading ? { role: "assistant", content: safeAnswer } : msg
+          msg.isLoading
+            ? { role: "assistant", content: safeAnswer, hasTyped: false }
+            : msg
         )
       );
+          
       
     } catch (err) {
       console.error(err);
       setMessages(prev =>
         prev.map(msg =>
-          msg.isLoading ? { role: "assistant", content: "Sorry, something went wrong." } : msg
+          msg.isLoading ? { role: "assistant", content: "Sorry, something went wrong." ,hasTyped: false} : msg
         )
       );
     }
@@ -316,49 +325,51 @@ export default function Chatbot() {
                       boxShadow: 1,
                     }}
                   >
-                    {msg.role === "assistant" ? (
-                      msg.isLoading ? (
-                        <Typography 
-                          fontFamily="MadeTommy" 
-                          fontSize={{ xs: '13px', md: '13px' }}
-                          color={textColor}
-                        >
-                          {msg.content}
-                        </Typography>
-                      ) : isLast ? (
-                        // Only last AI message gets typewriter
-                        <TypewriterMarkdown
-                          text={msg.content}
-                          components={{
-                            p: ({ children }) => (
-                              <Typography paragraph fontFamily="MadeTommy" fontSize={{ xs: '13px', md: '13px' }} color={textColor} sx={{ mb: 1 }}>
-                                {children}
-                              </Typography>
-                            ),
-                            ul: ({ children }) => <Box component="ul" sx={{ pl: 1.5, my: 1 }}>{children}</Box>,
-                            ol: ({ children }) => <Box component="ol" sx={{ pl: 1.5, my: 1 }}>{children}</Box>,
-                            li: ({ children }) => (
-                              <Typography component="li" fontFamily="MadeTommy" fontSize={{ xs: '13px', md: '13px' }} color={textColor} sx={{ mb: 0.3 }}>
-                                {children}
-                              </Typography>
-                            ),
-                            strong: ({ children }) => <Typography fontWeight="bold" component="span">{children}</Typography>,
-                            h1: ({ children }) => <Typography variant="h6" fontWeight="bold" mt={2} mb={1} fontFamily="MadeTommy">{children}</Typography>,
-                            h2: ({ children }) => <Typography variant="subtitle1" fontWeight="bold" mt={1.5} mb={0.5} fontFamily="MadeTommy">{children}</Typography>,
-                          }}
-                          speed={20}
-                        />
-                      ) : (
-                        // All previous messages render normally
-                        <Typography fontFamily="MadeTommy" fontSize={{ xs: '13px', md: '13px' }} color={textColor}>
-                          {msg.content}
-                        </Typography>
-                      )
-                    ) : (
-                      <Typography fontFamily="MadeTommy" fontSize={{ xs: '13px', md: '13px' }} color={textColor}>
+                   {msg.role === "assistant" ? (
+                    msg.isLoading ? (
+                      <Typography fontFamily="MadeTommy" fontSize="13px" color={textColor}>
                         {msg.content}
                       </Typography>
-                    )}
+                    ) : isLast && !msg.hasTyped ? (
+                      <TypewriterMarkdown
+                        text={msg.content}
+                        speed={1000}
+                        onDone={() => {
+                          setMessages(prev =>
+                            prev.map((m, idx) =>
+                              idx === i ? { ...m, hasTyped: true } : m
+                            )
+                          );
+                        }}
+                        components={{
+                          p: ({ children }) => (
+                            <Typography paragraph fontFamily="MadeTommy" fontSize="13px" color={textColor}>
+                              {children}
+                            </Typography>
+                          ),
+                          li: ({ children }) => (
+                            <Typography component="li" fontFamily="MadeTommy" fontSize="13px">
+                              {children}
+                            </Typography>
+                          ),
+                          strong: ({ children }) => (
+                            <Typography component="span" fontWeight="bold">
+                              {children}
+                            </Typography>
+                          ),
+                        }}
+                      />
+                    ) : (
+                      <Typography fontFamily="MadeTommy" fontSize="13px" color={textColor}>
+                        {msg.content}
+                      </Typography>
+                    )
+                  ) : (
+                    <Typography fontFamily="MadeTommy" fontSize="13px" color={textColor}>
+                      {msg.content}
+                    </Typography>
+                  )}
+
                   </Paper>
                 </Box>
               );
