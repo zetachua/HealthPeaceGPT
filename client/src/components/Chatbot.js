@@ -45,12 +45,11 @@ export default function Chatbot() {
   }, [messages]);
 
 
-
   const TypewriterMarkdown = React.memo(function TypewriterMarkdown({ text = "", components, speed = 20, onDone }) {
     const [displayed, setDisplayed] = useState("");
   
     useEffect(() => {
-      setDisplayed(""); // reset only when `text` actually changes
+      setDisplayed("");
       let i = 0;
       const interval = setInterval(() => {
         setDisplayed(text.slice(0, i + 1));
@@ -70,7 +69,7 @@ export default function Chatbot() {
       </ReactMarkdown>
     );
   });
-  
+
   
   const sendMessage = async () => {
     if (!input.trim()) return;
@@ -310,74 +309,41 @@ export default function Chatbot() {
               margin: 'auto',
             }}
           >
-           {messages.map((msg, i) => {
-              const isLast = i === messages.length - 1; // check if this is the last message
-              return (
-                <Box
-                  key={i}
-                  display="flex"
-                  justifyContent={msg.role === "user" ? "flex-end" : "flex-start"}
-                  mb={2}
-                >
-                  <Paper
-                    elevation={1}
-                    sx={{
-                      p: { xs: 1.5, md: 1.5 },
-                      maxWidth: { xs: '85%', md: '80%' },
-                      bgcolor: msg.role === "user" ? mintColor : "#F8F9FA",
-                      borderRadius: 3,
-                      boxShadow: 1,
-                    }}
-                  >
-                   {msg.role === "assistant" ? (
-                    msg.isLoading ? (
-                      <Typography fontFamily="MadeTommy" fontSize="13px" color={textColor}>
-                        {msg.content}
-                      </Typography>
-                    ) : isLast && !msg.hasTyped ? (
+          {messages.map((msg, i) => (
+              <Box key={i} display="flex" justifyContent={msg.role === "user" ? "flex-end" : "flex-start"} mb={2}>
+                <Paper sx={{ p: 1.5, maxWidth: '80%', bgcolor: msg.role === "user" ? mintColor : "#F8F9FA", borderRadius: 3 }}>
+                  {msg.role === "assistant" && !msg.isLoading ? (
+                    !msg.hasTyped ? (
                       <TypewriterMarkdown
                         text={msg.content}
-                        speed={1}
+                        speed={10}
                         onDone={() => {
                           setMessages(prev =>
-                            prev.map((m, idx) =>
-                              idx === i ? { ...m, hasTyped: true } : m
-                            )
+                            prev.map((m, idx) => idx === i ? { ...m, hasTyped: true } : m)
                           );
                         }}
                         components={{
-                          p: ({ children }) => (
-                            <Typography paragraph fontFamily="MadeTommy" fontSize="13px" color={textColor}>
-                              {children}
-                            </Typography>
-                          ),
-                          li: ({ children }) => (
-                            <Typography component="li" fontFamily="MadeTommy" fontSize="13px">
-                              {children}
-                            </Typography>
-                          ),
-                          strong: ({ children }) => (
-                            <Typography component="span" fontWeight="bold">
-                              {children}
-                            </Typography>
-                          ),
+                          p: ({ children }) => <Typography paragraph fontFamily="MadeTommy" fontSize="13px">{children}</Typography>,
+                          li: ({ children }) => <Typography component="li" fontFamily="MadeTommy" fontSize="13px">{children}</Typography>,
+                          strong: ({ children }) => <Typography component="span" fontWeight="bold">{children}</Typography>,
                         }}
                       />
                     ) : (
-                      <Typography fontFamily="MadeTommy" fontSize="13px" color={textColor}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+                        p: ({ children }) => <Typography paragraph fontFamily="MadeTommy" fontSize="13px">{children}</Typography>,
+                        li: ({ children }) => <Typography component="li" fontFamily="MadeTommy" fontSize="13px">{children}</Typography>,
+                        strong: ({ children }) => <Typography component="span" fontWeight="bold">{children}</Typography>,
+                      }}>
                         {msg.content}
-                      </Typography>
+                      </ReactMarkdown>
                     )
                   ) : (
-                    <Typography fontFamily="MadeTommy" fontSize="13px" color={textColor}>
-                      {msg.content}
-                    </Typography>
+                    <Typography fontFamily="MadeTommy" fontSize="13px">{msg.content}</Typography>
                   )}
+                </Paper>
+              </Box>
+            ))}
 
-                  </Paper>
-                </Box>
-              );
-            })}
 
             <div ref={messagesEndRef} />
           </Paper>
