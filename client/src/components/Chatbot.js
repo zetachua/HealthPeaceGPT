@@ -15,7 +15,7 @@ import SendIcon from '@mui/icons-material/Send';
 import MenuIcon from '@mui/icons-material/Menu';
 import SideBar from "./SideBar";
 import PDFViewer from "./PDFViewer";
-import { useState, useRef, useEffect } from "react";
+import React,{ useState, useRef, useEffect } from "react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useLayout } from "../context/LayoutContext";
