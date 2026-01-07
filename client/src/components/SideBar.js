@@ -9,6 +9,8 @@ import {
   ListItemText,
   ListItemSecondaryAction,
   IconButton,
+  Snackbar,
+  Alert,
 } from "@mui/material";
 import { FileUpload, Delete as DeleteIcon, Close as CloseIcon } from "@mui/icons-material";
 import { useState, useRef, useEffect } from "react";
@@ -29,6 +31,26 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
     currentFile: "",
     errorMessage: ""
   });
+  const [duplicateFiles, setDuplicateFiles] = useState([]);
+  const [snackbar, setSnackbar] = useState({
+    open: false,
+    message: "",
+    severity: "info"
+  });
+
+  // Create a map of existing files for duplicate checking
+  const existingFilesMap = useRef(new Map());
+  
+  // Update the map whenever files change
+  useEffect(() => {
+    existingFilesMap.current.clear();
+    files.forEach(file => {
+      // Use name as the identifier (since we don't have size in database)
+      const key = file.name.toLowerCase(); // Use lowercase for case-insensitive comparison
+      existingFilesMap.current.set(key, true);
+    });
+    console.log("Existing files map updated:", Array.from(existingFilesMap.current.keys()));
+  }, [files]);
 
   // Keep upload section open when uploading
   useEffect(() => {
@@ -37,13 +59,76 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
     }
   }, [uploading, selectedFiles.length]);
 
+  // Check for duplicates when files are selected
+  const checkForDuplicates = (newFiles) => {
+    const duplicates = [];
+    const uniqueNewFiles = [];
+    
+    console.log("Checking for duplicates. Existing files:", Array.from(existingFilesMap.current.keys()));
+    
+    newFiles.forEach(file => {
+      // Use lowercase name for comparison
+      const key = file.name.toLowerCase();
+      console.log(`Checking file: ${file.name} (key: ${key})`);
+      
+      if (existingFilesMap.current.has(key)) {
+        console.log(`Duplicate found: ${file.name}`);
+        duplicates.push({
+          name: file.name,
+          size: file.size,
+          key: key
+        });
+      } else {
+        console.log(`Unique file: ${file.name}`);
+        uniqueNewFiles.push(file);
+      }
+    });
+    
+    console.log(`Found ${duplicates.length} duplicates, ${uniqueNewFiles.length} unique files`);
+    return { duplicates, uniqueNewFiles };
+  };
+
   // Handle file selection (multiple files)
   const handleFileSelect = (event) => {
     const selected = Array.from(event.target.files);
+    console.log("Files selected:", selected.map(f => f.name));
+    
     if (selected.length > 0) {
-      setSelectedFiles(selected);
-      setShowSelectedFiles(true);
-      setUploadStatus({ success: 0, failed: 0, currentFile: "", errorMessage: "" });
+      // Check for duplicates
+      const { duplicates, uniqueNewFiles } = checkForDuplicates(selected);
+      
+      if (duplicates.length > 0) {
+        setDuplicateFiles(duplicates);
+        setSnackbar({
+          open: true,
+          message: `${duplicates.length} file(s) already exist and won't be uploaded.`,
+          severity: "warning"
+        });
+        
+        // Only upload unique files
+        if (uniqueNewFiles.length > 0) {
+          setSelectedFiles(uniqueNewFiles);
+          setShowSelectedFiles(true);
+          setUploadStatus({ success: 0, failed: 0, currentFile: "", errorMessage: "" });
+          console.log(`Setting ${uniqueNewFiles.length} unique files for upload`);
+        } else {
+          // All files are duplicates
+          setSelectedFiles([]);
+          setShowSelectedFiles(false);
+          if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+          }
+          console.log("All selected files are duplicates");
+          return;
+        }
+      } else {
+        // No duplicates found
+        setDuplicateFiles([]);
+        setSelectedFiles(selected);
+        setShowSelectedFiles(true);
+        setUploadStatus({ success: 0, failed: 0, currentFile: "", errorMessage: "" });
+        console.log("No duplicates found, all files are unique");
+      }
     }
   };
 
@@ -75,7 +160,7 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
     if (selectedFiles.length === 0) return;
 
     console.log("=== UPLOAD STARTING ===");
-    console.log("Using API URL:", API_BASE_URL);
+    console.log("Files to upload:", selectedFiles.map(f => f.name));
 
     // Set upload state immediately
     setUploading(true);
@@ -141,11 +226,15 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
           if (response.ok) {
             successfulUploads++;
             console.log(`✓ Upload successful`);
+            // Add to existing files map immediately
+            const key = file.name.toLowerCase();
+            existingFilesMap.current.set(key, true);
           } else {
             let errorText = "";
             try {
-              errorText = await response.text();
-            } catch (textError) {
+              const errorData = await response.json();
+              errorText = errorData.error || errorData.message || "Unknown error";
+            } catch {
               errorText = "Could not read error response";
             }
             
@@ -154,7 +243,7 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
             
             setUploadStatus(prev => ({
               ...prev,
-              errorMessage: `Server error: ${response.status}`
+              errorMessage: `Server error: ${response.status} - ${errorText}`
             }));
           }
         } catch (networkError) {
@@ -205,6 +294,15 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
         }
       }
 
+      // Show success snackbar
+      if (successfulUploads > 0) {
+        setSnackbar({
+          open: true,
+          message: `Successfully uploaded ${successfulUploads} file(s)`,
+          severity: "success"
+        });
+      }
+
       // If successful, handle mobile completion
       if (successfulUploads > 0 && onMobileUploadComplete) {
         setTimeout(() => {
@@ -216,6 +314,7 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
       if (successfulUploads > 0) {
         setTimeout(() => {
           setSelectedFiles([]);
+          setDuplicateFiles([]);
           setShowSelectedFiles(false);
           if (fileInputRef.current) {
             fileInputRef.current.value = "";
@@ -250,6 +349,7 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
     
     if (!uploading) {
       setSelectedFiles([]);
+      setDuplicateFiles([]);
       setShowSelectedFiles(false);
       setUploadStatus({ success: 0, failed: 0, currentFile: "", errorMessage: "" });
       if (fileInputRef.current) {
@@ -269,7 +369,14 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
   
     // Optimistically remove the file from UI
     const originalFiles = [...files];
+    const fileToDelete = files.find(f => f.id === id);
     setFiles(prev => prev.filter(f => f.id !== id));
+    
+    // Remove from existing files map
+    if (fileToDelete) {
+      const key = fileToDelete.name.toLowerCase();
+      existingFilesMap.current.delete(key);
+    }
   
     try {
       const response = await fetch(`${API_BASE_URL}/delete/${id}`, {
@@ -282,11 +389,28 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
   
       // Refresh files from server just in case
       await refreshFiles();
+      
+      // Show snackbar
+      setSnackbar({
+        open: true,
+        message: `"${fileToDelete?.name || 'File'}" deleted successfully`,
+        severity: "info"
+      });
     } catch (error) {
       console.error("Delete failed:", error);
   
       // Rollback if delete fails
       setFiles(originalFiles);
+      if (fileToDelete) {
+        const key = fileToDelete.name.toLowerCase();
+        existingFilesMap.current.set(key, true);
+      }
+      
+      setSnackbar({
+        open: true,
+        message: "Failed to delete file. Please try again.",
+        severity: "error"
+      });
     }
   };
 
@@ -365,6 +489,57 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
         </Button>
       </Box>
 
+      {/* Duplicate Files Warning */}
+      {duplicateFiles.length > 0 && (
+        <Box sx={{ 
+          border: "1px solid #FFA726", 
+          borderRadius: 1, 
+          p: 1.5,
+          backgroundColor: "#FFF3E0",
+          mt: 1
+        }}>
+          <Box display="flex" justifyContent="space-between" alignItems="center" mb={1}>
+            <Typography fontFamily="MadeTommy" fontSize={10} color="#E65100">
+              ⚠ {duplicateFiles.length} duplicate file(s) detected:
+            </Typography>
+            <IconButton
+              size="small"
+              onClick={() => setDuplicateFiles([])}
+              sx={{ 
+                padding: 0, 
+                color: "#E65100",
+                "& .MuiSvgIcon-root": {
+                  fontSize: "14px",
+                }
+              }}
+            >
+              <CloseIcon />
+            </IconButton>
+          </Box>
+          <List dense sx={{ maxHeight: "80px", overflow: "auto", bgcolor: "white", borderRadius: 0.5 }}>
+            {duplicateFiles.map((dup, index) => (
+              <ListItem key={index} dense sx={{ px: 1, py: 0.5 }}>
+                <ListItemText
+                  primary={
+                    <Typography fontFamily="MadeTommy" fontSize={9} noWrap>
+                      {dup.name}
+                    </Typography>
+                  }
+                  secondary={
+                    <Typography fontFamily="MadeTommy" fontSize={8} color="text.secondary">
+                      {(dup.size / 1024).toFixed(1)} KB
+                    </Typography>
+                  }
+                />
+              </ListItem>
+            ))}
+          </List>
+          <Typography fontFamily="MadeTommy" fontSize={9} color="#E65100" mt={1}>
+            These files already exist and won't be uploaded.
+          </Typography>
+        </Box>
+      )}
+
       {/* Selected Files List */}
       {(showSelectedFiles || selectedFiles.length > 0) && (
         <Box sx={{ mt: 1, border: "1px solid #E9ECEF", borderRadius: 1, p: 1.5 }}>
@@ -373,6 +548,7 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
               {uploading 
                 ? `Uploading and Embedding Data...` 
                 : `${selectedFiles.length} file(s) selected`}
+              {duplicateFiles.length > 0 && ` (+${duplicateFiles.length} duplicates skipped)`}
             </Typography>
             {!uploading && (
               <IconButton
@@ -678,6 +854,26 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
           ))
         )}
       </Box>
+
+      {/* Snackbar for notifications */}
+      <Snackbar
+        open={snackbar.open}
+        autoHideDuration={4000}
+        onClose={() => setSnackbar({ ...snackbar, open: false })}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+      >
+        <Alert 
+          onClose={() => setSnackbar({ ...snackbar, open: false })} 
+          severity={snackbar.severity}
+          sx={{ 
+            fontFamily: "MadeTommy", 
+            fontSize: "11px",
+            alignItems: "center"
+          }}
+        >
+          {snackbar.message}
+        </Alert>
+      </Snackbar>
     </Box>
   );
 }
