@@ -44,7 +44,7 @@ export default function Chatbot() {
     scrollToBottom();
   }, [messages]);
 
-  function TypewriterMarkdown({ text, components, speed = 50 }) {
+  function TypewriterMarkdown({ text="", components, speed = 1000 }) {
     const [displayed, setDisplayed] = useState("");
 
     useEffect(() => {
@@ -78,13 +78,25 @@ export default function Chatbot() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: input }),
       });
-      const data = await res.json();
-
+      
+      let data;
+      try {
+        data = await res.json();
+      } catch {
+        throw new Error("Invalid server response");
+      }
+      
+      const safeAnswer =
+        res.ok && data?.answer
+          ? data.answer
+          : "Sorry — I couldn’t retrieve an answer.";
+      
       setMessages(prev =>
         prev.map(msg =>
-          msg.isLoading ? { role: "assistant", content: data.answer } : msg
+          msg.isLoading ? { role: "assistant", content: safeAnswer } : msg
         )
       );
+      
     } catch (err) {
       console.error(err);
       setMessages(prev =>

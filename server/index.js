@@ -356,50 +356,76 @@ async function generateAnswer(context, question) {
 }
 
 app.post("/chat", async (req, res) => {
-  console.log(
-    scoredChunks
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 10)
-      .map(c => ({
-        score: Number(c.score.toFixed(3)),
-        preview: c.text.slice(0, 80)
-      }))
-  );
-  
   try {
     const { message } = req.body;
-
     if (!message) {
       return res.status(400).json({ error: "Message required" });
     }
 
-    // 1. Embed user query
+    // 1. Embed query
     const queryEmbedding = await embed(message);
 
-    // 2. Load chunks from Supabase
+    // 2. Load chunks
     const { data: chunks, error } = await supabase
       .from("chunks")
       .select("text, embedding");
 
-    if (error) {
-      throw error;
+    if (error) throw error;
+    if (!chunks || chunks.length === 0) {
+      return res.json({
+        answer: "No documents are available to answer this question."
+      });
     }
 
     // 3. Score chunks
     const scoredChunks = chunks
-      .filter(c => Array.isArray(c.embedding) && c.embedding.length > 0)
-      .map(c => ({
-        text: c.text,
-        score: cosineSimilarity(queryEmbedding, c.embedding)
-      }));
+      .map(c => {
+        let embedding = c.embedding;
 
-    // 4. Select top K
-    const topChunks = scoredChunks
-      .sort((a, b) => b.score - a.score)
+        // 🔥 Parse pgvector string → array
+        if (typeof embedding === "string") {
+          try {
+            embedding = JSON.parse(embedding);
+          } catch {
+            return null;
+          }
+        }
 
+        if (!Array.isArray(embedding)) return null;
+
+        return {
+          text: c.text,
+          score: cosineSimilarity(queryEmbedding, embedding),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.score - a.score);
+
+    // 🔍 DEBUG (keep this)
+    console.log(
+      scoredChunks.slice(0, 5).map(c => ({
+        score: Number(c.score.toFixed(3)),
+        preview: c.text.slice(0, 60)
+      }))
+    );
+
+    // 4. Take TOP-K only
+    const TOP_K = 12;
+    const topChunks = scoredChunks.slice(0, TOP_K);
+
+    const bestScore = topChunks[0]?.score ?? 0;
+
+    // 5. Guard: no relevant info
+    if (bestScore < 0.15) {
+      return res.json({
+        answer: "I couldn’t find relevant information in the uploaded documents to answer that question."
+      });
+    }
+
+    // 6. Build context safely
     const context = topChunks.map(c => c.text).join("\n\n");
 
-    // 5. Generate answer
+    // 7. Generate answer
     const answer = await generateAnswer(context, message);
 
     res.json({ answer });
