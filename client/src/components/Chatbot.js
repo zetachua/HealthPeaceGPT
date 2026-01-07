@@ -44,30 +44,33 @@ export default function Chatbot() {
     scrollToBottom();
   }, [messages]);
 
-  function TypewriterMarkdown({ text = "", components, speed = 20, onDone }) {
+
+
+  const TypewriterMarkdown = React.memo(function TypewriterMarkdown({ text = "", components, speed = 20, onDone }) {
     const [displayed, setDisplayed] = useState("");
   
     useEffect(() => {
+      setDisplayed(""); // reset only when `text` actually changes
       let i = 0;
       const interval = setInterval(() => {
         setDisplayed(text.slice(0, i + 1));
         i++;
         if (i >= text.length) {
           clearInterval(interval);
-          onDone?.(); // mark as completed
+          onDone?.();
         }
       }, speed);
   
       return () => clearInterval(interval);
-// eslint-disable-next-line
-    }, [messages]);
+    }, [text, speed, onDone]);
   
     return (
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {displayed}
       </ReactMarkdown>
     );
-  }
+  });
+  
   
   const sendMessage = async () => {
     if (!input.trim()) return;
@@ -334,7 +337,7 @@ export default function Chatbot() {
                     ) : isLast && !msg.hasTyped ? (
                       <TypewriterMarkdown
                         text={msg.content}
-                        speed={1000}
+                        speed={1}
                         onDone={() => {
                           setMessages(prev =>
                             prev.map((m, idx) =>
