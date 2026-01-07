@@ -385,6 +385,26 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
             multiple
           />
         </Button>
+        <Button
+          size="small"
+          onClick={async (e) => {
+            e.stopPropagation();
+            console.log('=== MANUAL REFRESH TEST ===');
+            try {
+              const response = await fetch(`${API_BASE_URL}/files`);
+              const data = await response.json();
+              console.log('Files from server:', data);
+              console.log('Current files in state:', files);
+              await refreshFiles();
+              console.log('After refresh, files:', files);
+            } catch (error) {
+              console.error('Test failed:', error);
+            }
+          }}
+          sx={{ fontSize: "10px" }}
+        >
+          Test Refresh
+        </Button>
       </Box>
 
       {/* Selected Files List */}
