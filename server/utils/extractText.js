@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import { promisify } from 'util';
 import { exec } from 'child_process';
-import Tesseract from 'tesseract.js'; // Add this dependency
+import Tesseract from 'tesseract.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -34,11 +34,11 @@ export async function extractText(filePath, mimeType, buffer) {
         return data.text;
       } else {
         console.log('PDF appears empty or image-based. Falling back to OCR...');
-        return await extractTextWithOCR(filePath, buffer);
+        return await extractTextWithOCR(buffer); // Only pass buffer
       }
     } catch (pdfParseError) {
       console.log('pdf-parse failed, trying OCR fallback...');
-      return await extractTextWithOCR(filePath, buffer);
+      return await extractTextWithOCR(buffer); // Only pass buffer
     }
 
   } catch (error) {
@@ -48,35 +48,62 @@ export async function extractText(filePath, mimeType, buffer) {
 }
 
 // OCR extraction using tesseract.js
-export async function extractTextWithOCR(filePath, buffer) {
+export async function extractTextWithOCR(buffer) {
+  let tmpDir = null;
+  
   try {
     console.log('Running OCR on PDF...');
 
-    // Convert PDF to images first using pdftoppm (from poppler utils)
-    const tmpDir = path.join(__dirname, 'tmp_ocr', uuidv4());
+    // Create temporary directory
+    tmpDir = path.join(__dirname, 'tmp_ocr', uuidv4());
     await fs.ensureDir(tmpDir);
-    const tmpPdfPath = path.join(tmpDir, path.basename(filePath));
+    
+    // Write buffer to temporary PDF file
+    const tmpPdfPath = path.join(tmpDir, 'input.pdf');
     await fs.writeFile(tmpPdfPath, buffer);
 
-    // Convert PDF pages to PNG images
-    // Requires `pdftoppm` installed: brew install poppler
-    await execAsync(`pdftoppm -png "${tmpPdfPath}" "${tmpDir}/page"`);
+    console.log(`Temporary PDF saved to: ${tmpPdfPath}`);
 
+    // Convert PDF pages to PNG images
+    // Requires `pdftoppm` installed: 
+    // - Linux: apt-get install poppler-utils
+    // - macOS: brew install poppler
+    // - Docker: RUN apt-get update && apt-get install -y poppler-utils
+    const outputPrefix = path.join(tmpDir, 'page');
+    await execAsync(`pdftoppm -png "${tmpPdfPath}" "${outputPrefix}"`);
+
+    // Read generated PNG files
     const files = await fs.readdir(tmpDir);
-    const pngFiles = files.filter(f => f.endsWith('.png'));
+    const pngFiles = files.filter(f => f.endsWith('.png')).sort();
+
+    if (pngFiles.length === 0) {
+      throw new Error('No PNG images generated from PDF. Check if poppler-utils is installed.');
+    }
+
+    console.log(`Generated ${pngFiles.length} PNG files for OCR`);
 
     let fullText = '';
     for (const png of pngFiles) {
       const imagePath = path.join(tmpDir, png);
-      const { data: { text } } = await Tesseract.recognize(imagePath, 'eng', { logger: m => console.log(m) });
+      console.log(`Processing page: ${png}`);
+      
+      const { data: { text } } = await Tesseract.recognize(
+        imagePath, 
+        'eng', 
+        { 
+          logger: m => {
+            if (m.status === 'recognizing text') {
+              console.log(`OCR progress: ${Math.round(m.progress * 100)}%`);
+            }
+          }
+        }
+      );
+      
       fullText += text + '\n\n';
     }
 
-    // Clean up temporary files
-    await fs.remove(tmpDir);
-
     if (!fullText || fullText.trim().length === 0) {
-      throw new Error('OCR could not extract any text');
+      throw new Error('OCR could not extract any text from the PDF');
     }
 
     console.log(`OCR extraction successful. Text length: ${fullText.length}`);
@@ -84,6 +111,23 @@ export async function extractTextWithOCR(filePath, buffer) {
 
   } catch (ocrError) {
     console.error('OCR extraction failed:', ocrError.message);
-    throw new Error('Failed to extract text via OCR. Ensure the PDF is readable.');
+    
+    // Provide helpful error messages
+    if (ocrError.message.includes('pdftoppm')) {
+      throw new Error('Failed to convert PDF to images. Ensure poppler-utils is installed (apt-get install poppler-utils or brew install poppler)');
+    }
+    
+    throw new Error(`Failed to extract text via OCR: ${ocrError.message}`);
+    
+  } finally {
+    // Clean up temporary files
+    if (tmpDir) {
+      try {
+        await fs.remove(tmpDir);
+        console.log('Temporary OCR files cleaned up');
+      } catch (cleanupError) {
+        console.error('Failed to clean up temp directory:', cleanupError.message);
+      }
+    }
   }
 }
