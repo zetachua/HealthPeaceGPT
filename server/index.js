@@ -12,6 +12,7 @@ import { chunkText } from "./utils/chunkText.js";
 import { cosineSimilarity, embed } from "./utils/embedding.js";
 
 import OpenAI from "openai";
+import { deduplicateChunks, normalizeOCR } from "./helper.js";
 
 // Get __dirname equivalent in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -355,6 +356,16 @@ async function generateAnswer(context, question) {
 }
 
 app.post("/chat", async (req, res) => {
+  console.log(
+    scoredChunks
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10)
+      .map(c => ({
+        score: Number(c.score.toFixed(3)),
+        preview: c.text.slice(0, 80)
+      }))
+  );
+  
   try {
     const { message } = req.body;
 
@@ -385,7 +396,6 @@ app.post("/chat", async (req, res) => {
     // 4. Select top K
     const topChunks = scoredChunks
       .sort((a, b) => b.score - a.score)
-      .slice(0, 5);
 
     const context = topChunks.map(c => c.text).join("\n\n");
 
@@ -479,7 +489,8 @@ app.post("/upload-and-ingest", upload.single("file"), async (req, res) => {
 
     // 3. Extract text with OCR
     console.log('\n📝 Step 3: Extracting text with OCR...');
-    const rawText = await extractTextWithOCR(buffer);
+    
+    const rawText = normalizeOCR(await extractTextWithOCR(buffer));
     console.log(`✓ Text extracted: ${rawText.length} characters`);
     
     if (rawText.length === 0) {

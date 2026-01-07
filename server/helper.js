@@ -25,6 +25,17 @@ export function deduplicateChunks(chunks) {
     
     return unique;
   }
+
+  export function normalizeOCR(text) {
+    return text
+      .replace(/[\r\n]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/B1ood/g, 'Blood')
+      .replace(/Pressu re/g, 'Pressure')
+      .replace(/8O/g, '80')
+      .trim();
+  }
+  
   
   // Improved chunking function
 export function chunkTextImproved(text, chunkSize = 500, overlap = 50) {
