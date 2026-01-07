@@ -1,11 +1,5 @@
 # syntax = docker/dockerfile:1
 
-# Install poppler-utils for PDF to image conversion
-RUN apt-get update && apt-get install -y poppler-utils
-
-# Install tesseract for OCR
-RUN apt-get install -y tesseract-ocr
-
 # Adjust NODE_VERSION as desired
 ARG NODE_VERSION=22.13.1
 FROM node:${NODE_VERSION}-slim AS base
@@ -22,13 +16,20 @@ ENV NODE_ENV="production"
 # Throw-away build stage to reduce size of final image
 FROM base AS build
 
-# Install packages needed to build node modules
+# Install packages needed to build node modules AND poppler-utils + tesseract
 RUN apt-get update -qq && \
-    apt-get install --no-install-recommends -y build-essential node-gyp pkg-config python-is-python3
+    apt-get install --no-install-recommends -y \
+    build-essential \
+    node-gyp \
+    pkg-config \
+    python-is-python3 \
+    poppler-utils \
+    tesseract-ocr && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install node modules
 COPY package-lock.json package.json ./
-RUN npm ci
+RUN npm ci --only=production
 
 # Copy application code
 COPY . .
@@ -37,11 +38,19 @@ COPY . .
 # Final stage for app image
 FROM base
 
+# Install runtime dependencies (poppler-utils and tesseract) in final image
+RUN apt-get update -qq && \
+    apt-get install --no-install-recommends -y \
+    poppler-utils \
+    tesseract-ocr && \
+    rm -rf /var/lib/apt/lists/*
+
 # Copy built application
 COPY --from=build /app /app
 
+# Create tmp_ocr directory for OCR processing
+RUN mkdir -p /app/tmp_ocr
+
 # Start the server by default, this can be overwritten at runtime
-EXPOSE 3000
-CMD [ "npm", "run", "start" ]
-
-
+EXPOSE 5050
+CMD [ "node", "index.js" ]
