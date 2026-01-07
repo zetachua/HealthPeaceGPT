@@ -15,6 +15,11 @@ primary_region = 'sin'
   auto_start_machines = true
   min_machines_running = 0
   processes = ['app']
+  
+   # Increase timeout for long-running requests
+  [http_service.timeouts]
+    hard_limit = "10m"  # 10 minutes max
+
 
 [[vm]]
   memory = '1gb'

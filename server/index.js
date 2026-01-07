@@ -397,6 +397,8 @@ app.post("/ingest", async (req, res) => {
     const { storagePath, originalName } = req.body;
     const docId = uuidv4();
 
+    console.log(`Starting ingestion for: ${originalName}`);
+
     // 1. Download PDF from Supabase
     const { data, error } = await supabase.storage
       .from("pdfs")
@@ -407,39 +409,56 @@ app.post("/ingest", async (req, res) => {
     const buffer = Buffer.from(await data.arrayBuffer());
 
     // 2. Extract text
+    console.log('Extracting text...');
     const rawText = await extractTextWithOCR(buffer);
 
-    // 3. Chunk (limit!)
-    const chunks = chunkText(rawText).slice(0, 100);
+    // 3. Chunk (limit to 50 for faster processing)
+    console.log('Chunking text...');
+    const chunks = chunkText(rawText).slice(0, 50); // Reduced from 100
+    console.log(`Processing ${chunks.length} chunks`);
 
-    // 4. Insert document
+    // 4. Insert document first
     await supabase.from("documents").insert({
       id: docId,
       name: originalName,
       storage_path: storagePath
     });
 
-    // 5. Embed + insert chunks
+    // 5. Embed chunks in BATCHES (parallel processing)
+    console.log('Embedding chunks in batches...');
+    const batchSize = 10; // Process 10 at a time
     const rows = [];
-    for (const chunk of chunks) {
-      rows.push({
-        id: uuidv4(),
-        document_id: docId,
-        text: chunk,
-        embedding: await embed(chunk)
-      });
+
+    for (let i = 0; i < chunks.length; i += batchSize) {
+      const batch = chunks.slice(i, i + batchSize);
+      console.log(`Processing batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(chunks.length/batchSize)}`);
+      
+      const batchResults = await Promise.all(
+        batch.map(async (chunk) => ({
+          id: uuidv4(),
+          document_id: docId,
+          text: chunk,
+          embedding: await embed(chunk)
+        }))
+      );
+      
+      rows.push(...batchResults);
+      
+      // Insert this batch immediately
+      await supabase.from("chunks").insert(batchResults);
     }
 
-    await supabase.from("chunks").insert(rows);
+    console.log(`Ingestion complete: ${rows.length} chunks processed`);
 
     res.json({
       id: docId,
       name: originalName,
       chunks: rows.length
     });
+
   } catch (err) {
     console.error("Ingest failed:", err);
-    res.status(500).json({ error: "Ingest failed" });
+    res.status(500).json({ error: err.message || "Ingest failed" });
   }
 });
 
