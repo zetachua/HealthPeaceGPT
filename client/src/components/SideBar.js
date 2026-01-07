@@ -1,4 +1,3 @@
-import { supabase } from "../supabase";
 import {
   Box,
   Typography,
@@ -18,7 +17,7 @@ import { API_BASE_URL } from "./Chatbot";
 
 export default function SideBar({ textColor, onMobileUploadComplete, setIsUploading }) {
   const fileInputRef = useRef(null);
-  const { openPDF, files, refreshFiles,setFiles} = useLayout();
+  const { openPDF, files, refreshFiles, setFiles } = useLayout();
 
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [searchTerm, setSearchTerm] = useState("");
@@ -125,36 +124,17 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
           errorMessage: ""
         });
 
-        // const formData = new FormData();
-        // formData.append("file", file);
-
         try {
-          const filePath = `pdfs/${crypto.randomUUID()}-${file.name}`;
+          // Create FormData and send file directly to backend
+          const formData = new FormData();
+          formData.append("file", file);
 
-          const { error: uploadError } = await supabase.storage
-            .from("pdfs")
-            .upload(filePath, file, {
-              contentType: "application/pdf"
-            });
-          
-          if (uploadError) {
-            throw uploadError;
-          }
-          
-          // tell backend to ingest
-          const response = await fetch(`${API_BASE_URL}/ingest`, {
+          console.log(`Uploading file: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`);
+
+          const response = await fetch(`${API_BASE_URL}/upload-and-ingest`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              storagePath: filePath,
-              originalName: file.name
-            })
+            body: formData
           });
-          
-          if (!response.ok) {
-            throw new Error("Ingest failed");
-          }
-          
 
           console.log(`Response:`, response.status, response.statusText);
 
@@ -284,7 +264,6 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
 
   // Delete file from server
   const handleDelete = async (id, e) => {
-    
     e.preventDefault();
     e.stopPropagation();
   
@@ -310,7 +289,6 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
       setFiles(originalFiles);
     }
   };
-  
 
   // Handle PDF click
   const handlePDFClick = (file) => {
@@ -384,26 +362,6 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
             ref={fileInputRef}
             multiple
           />
-        </Button>
-        <Button
-          size="small"
-          onClick={async (e) => {
-            e.stopPropagation();
-            console.log('=== MANUAL REFRESH TEST ===');
-            try {
-              const response = await fetch(`${API_BASE_URL}/files`);
-              const data = await response.json();
-              console.log('Files from server:', data);
-              console.log('Current files in state:', files);
-              await refreshFiles();
-              console.log('After refresh, files:', files);
-            } catch (error) {
-              console.error('Test failed:', error);
-            }
-          }}
-          sx={{ fontSize: "10px" }}
-        >
-          Test Refresh
         </Button>
       </Box>
 

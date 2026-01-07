@@ -392,75 +392,137 @@ export const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-app.post("/ingest", async (req, res) => {
+
+// REPLACE your /ingest endpoint with this unified endpoint
+// This handles file upload from frontend AND processing
+
+
+app.post("/upload-and-ingest", upload.single("file"), async (req, res) => {
   try {
-    const { storagePath, originalName } = req.body;
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
     const docId = uuidv4();
+    const fileName = req.file.originalname || `unnamed-${docId}.pdf`;
+    const filePath = req.file.path;
 
-    console.log(`Starting ingestion for: ${originalName}`);
+    console.log(`Starting upload and ingestion for: ${fileName}`);
 
-    // 1. Download PDF from Supabase
-    const { data, error } = await supabase.storage
+    // 1. Read the uploaded file
+    const buffer = await fs.readFile(filePath);
+
+    // 2. Upload to Supabase storage
+    const storagePath = `pdfs/${docId}-${fileName}`;
+    const { error: uploadError } = await supabase.storage
       .from("pdfs")
-      .download(storagePath);
+      .upload(storagePath, buffer, {
+        contentType: "application/pdf",
+        upsert: false
+      });
 
-    if (error) throw error;
+    if (uploadError) {
+      console.error("Supabase upload error:", uploadError);
+      await fs.remove(filePath);
+      return res.status(500).json({ error: "Failed to upload to storage" });
+    }
 
-    const buffer = Buffer.from(await data.arrayBuffer());
+    console.log('✓ Uploaded to Supabase storage');
 
-    // 2. Extract text
+    // 3. Extract text with OCR
     console.log('Extracting text...');
     const rawText = await extractTextWithOCR(buffer);
+    console.log(`✓ Text extracted: ${rawText.length} characters`);
 
-    // 3. Chunk (limit to 50 for faster processing)
+    // 4. Chunk text - LIMIT TO 30 CHUNKS for faster processing
     console.log('Chunking text...');
-    const chunks = chunkText(rawText).slice(0, 50); // Reduced from 100
-    console.log(`Processing ${chunks.length} chunks`);
+    const allChunks = chunkText(rawText);
+    const chunks = allChunks.slice(0, 30); // Reduced from 50 to 30
+    console.log(`✓ Processing ${chunks.length} chunks (out of ${allChunks.length} total)`);
 
-    // 4. Insert document first
-    await supabase.from("documents").insert({
-      id: docId,
-      name: originalName,
-      storage_path: storagePath
-    });
+    // 5. Insert document record
+    const { error: docError } = await supabase
+      .from("documents")
+      .insert({
+        id: docId,
+        name: fileName,
+        storage_path: storagePath
+      });
 
-    // 5. Embed chunks in BATCHES (parallel processing)
-    console.log('Embedding chunks in batches...');
-    const batchSize = 10; // Process 10 at a time
-    const rows = [];
+    if (docError) {
+      console.error("Document insert error:", docError);
+      // Clean up storage
+      await supabase.storage.from("pdfs").remove([storagePath]);
+      await fs.remove(filePath);
+      return res.status(500).json({ error: "Failed to create document record" });
+    }
+
+    console.log('✓ Document record created');
+
+    // 6. Embed chunks in LARGER batches for speed
+    console.log('Embedding chunks...');
+    const batchSize = 15; // Increased from 10 to 15 for faster processing
+    const allRows = [];
 
     for (let i = 0; i < chunks.length; i += batchSize) {
       const batch = chunks.slice(i, i + batchSize);
-      console.log(`Processing batch ${Math.floor(i/batchSize) + 1}/${Math.ceil(chunks.length/batchSize)}`);
+      const batchNum = Math.floor(i/batchSize) + 1;
+      const totalBatches = Math.ceil(chunks.length/batchSize);
       
+      console.log(`Processing batch ${batchNum}/${totalBatches} (${batch.length} chunks)`);
+      
+      // Embed all chunks in this batch in parallel
       const batchResults = await Promise.all(
-        batch.map(async (chunk) => ({
+        batch.map(async (chunk, idx) => ({
           id: uuidv4(),
           document_id: docId,
           text: chunk,
+          chunk_index: i + idx,
           embedding: await embed(chunk)
         }))
       );
       
-      rows.push(...batchResults);
+      allRows.push(...batchResults);
       
-      // Insert this batch immediately
-      await supabase.from("chunks").insert(batchResults);
+      // Insert this batch to Supabase
+      const { error: chunkError } = await supabase
+        .from("chunks")
+        .insert(batchResults);
+
+      if (chunkError) {
+        console.error("Chunk insert error:", chunkError);
+        // Continue with other batches even if one fails
+      } else {
+        console.log(`✓ Batch ${batchNum} inserted`);
+      }
     }
 
-    console.log(`Ingestion complete: ${rows.length} chunks processed`);
+    // 7. Clean up temporary file
+    await fs.remove(filePath);
+
+    console.log(`✓ Upload and ingestion complete: ${allRows.length} chunks processed`);
 
     res.json({
       id: docId,
-      name: originalName,
-      chunks: rows.length
+      name: fileName,
+      chunks: allRows.length,
+      totalChunksAvailable: allChunks.length
     });
 
   } catch (err) {
-    console.error("Ingest failed:", err);
-    res.status(500).json({ error: err.message || "Ingest failed" });
+    console.error("Upload and ingest failed:", err);
+    
+    // Cleanup on error
+    if (req.file && req.file.path) {
+      await fs.remove(req.file.path).catch(() => {});
+    }
+    
+    res.status(500).json({ 
+      error: err.message || "Upload and ingest failed" 
+    });
   }
 });
+
 
 app.get("/files", async (req, res) => {
   const { data, error } = await supabase
