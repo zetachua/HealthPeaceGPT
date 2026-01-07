@@ -1,5 +1,11 @@
 # syntax = docker/dockerfile:1
 
+# Install poppler-utils for PDF to image conversion
+RUN apt-get update && apt-get install -y poppler-utils
+
+# Install tesseract for OCR
+RUN apt-get install -y tesseract-ocr
+
 # Adjust NODE_VERSION as desired
 ARG NODE_VERSION=22.13.1
 FROM node:${NODE_VERSION}-slim AS base
@@ -37,3 +43,5 @@ COPY --from=build /app /app
 # Start the server by default, this can be overwritten at runtime
 EXPOSE 3000
 CMD [ "npm", "run", "start" ]
+
+
