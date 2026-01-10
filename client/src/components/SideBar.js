@@ -29,6 +29,13 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
     success: 0, 
     failed: 0,
     currentFile: "",
+    currentFileIndex: 0,
+    totalFiles: 0,
+    progress: 0,
+    stage: '',
+    currentPage: 0,      // ✅ Add this
+    totalPages: 0,       // ✅ Add this
+    pageProgress: 0,     // ✅ Add this
     errorMessage: ""
   });
   const [duplicateFiles, setDuplicateFiles] = useState([]);
@@ -133,214 +140,270 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
   };
 
   // Test server connection
-  const testServerConnection = async () => {
-    try {
-      console.log(`Testing connection to: ${API_BASE_URL}`);
-      const response = await fetch(`${API_BASE_URL}/`, {
-        method: "GET",
-        headers: {
-          "Accept": "application/json",
-        },
-      });
-      console.log("Server connection test:", response.status, response.statusText);
-      return response.ok;
-    } catch (error) {
-      console.error("Server connection failed:", error);
-      return false;
-    }
-  };
+  // const testServerConnection = async () => {
+  //   try {
+  //     console.log(`Testing connection to: ${API_BASE_URL}`);
+  //     const response = await fetch(`${API_BASE_URL}/`, {
+  //       method: "GET",
+  //       headers: {
+  //         "Accept": "application/json",
+  //       },
+  //     });
+  //     console.log("Server connection test:", response.status, response.statusText);
+  //     return response.ok;
+  //   } catch (error) {
+  //     console.error("Server connection failed:", error);
+  //     return false;
+  //   }
+  // };
 
-  // Upload multiple files
-  const handleUpload = async (e) => {
-    if (e) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-    
-    if (selectedFiles.length === 0) return;
+// Upload multiple files with real-time progress
 
-    console.log("=== UPLOAD STARTING ===");
-    console.log("Files to upload:", selectedFiles.map(f => f.name));
+const handleUpload = async (e) => {
+  if (e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  
+  if (selectedFiles.length === 0) return;
 
-    // Set upload state immediately
-    setUploading(true);
-    if (setIsUploading) {
-      setIsUploading(true);
-    }
-    setUploadStatus({ 
-      success: 0, 
-      failed: 0,
-      currentFile: "Testing server connection...",
-      errorMessage: ""
-    });
-    
-    // First test server connection
-    const serverAvailable = await testServerConnection();
-    if (!serverAvailable) {
-      console.error(`Server at ${API_BASE_URL} is not available!`);
-      setUploadStatus({ 
-        success: 0, 
-        failed: selectedFiles.length,
-        currentFile: "",
-        errorMessage: `Cannot connect to server at ${API_BASE_URL}. Make sure backend is running.`
-      });
-      setUploading(false);
-      if (setIsUploading) setIsUploading(false);
-      return;
-    }
+  setUploading(true);
+  if (setIsUploading) {
+    setIsUploading(true);
+  }
 
-    console.log("Server is available, starting upload...");
-    
-    // Store files locally
-    const filesToUpload = [...selectedFiles];
-    let successfulUploads = 0;
-    let failedUploads = 0;
+  const filesToUpload = [...selectedFiles];
+  let successfulUploads = 0;
+  let failedUploads = 0;
 
-    try {
-      // Upload files sequentially
-      for (let i = 0; i < filesToUpload.length; i++) {
-        const file = filesToUpload[i];
-        
-        // Update status
-        setUploadStatus({ 
-          success: successfulUploads, 
-          failed: failedUploads,
-          currentFile: `Uploading: ${file.name}`,
-          errorMessage: ""
-        });
-
-        try {
-          // Create FormData and send file directly to backend
-          const formData = new FormData();
-          formData.append("file", file);
-
-          console.log(`Uploading file: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`);
-
-          const response = await fetch(`${API_BASE_URL}/upload-and-ingest`, {
-            method: "POST",
-            body: formData
-          });
-
-          console.log(`Response:`, response.status, response.statusText);
-
-          if (response.ok) {
-            successfulUploads++;
-            console.log(`✓ Upload successful`);
-            // Add to existing files map immediately
-            const key = file.name.toLowerCase();
-            existingFilesMap.current.set(key, true);
-          } else {
-            let errorText = "";
-            try {
-              const errorData = await response.json();
-              errorText = errorData.error || errorData.message || "Unknown error";
-            } catch {
-              errorText = "Could not read error response";
-            }
-            
-            console.error(`✗ Upload failed:`, response.status, errorText);
-            failedUploads++;
-            
-            setUploadStatus(prev => ({
-              ...prev,
-              errorMessage: `Server error: ${response.status} - ${errorText}`
-            }));
-          }
-        } catch (networkError) {
-          console.error(`✗ Network error:`, networkError);
-          failedUploads++;
-          
-          setUploadStatus(prev => ({
-            ...prev,
-            errorMessage: `Network error: ${networkError.message}`
-          }));
-        }
-        
-        // Update status after each file
-        setUploadStatus({ 
-          success: successfulUploads, 
-          failed: failedUploads,
-          currentFile: `Processed ${i + 1}/${filesToUpload.length} files`,
-          errorMessage: ""
-        });
-
-        // Small delay between files
-        if (i < filesToUpload.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 300));
-        }
-      }
-
-      // Final status
-      const finalMessage = successfulUploads > 0 
-        ? `Uploaded ${successfulUploads} file(s) successfully!` 
-        : "All uploads failed";
+  try {
+    // Upload files sequentially with progress
+    for (let fileIndex = 0; fileIndex < filesToUpload.length; fileIndex++) {
+      const file = filesToUpload[fileIndex];
       
-      console.log(`=== UPLOAD COMPLETE ===`);
-      console.log(`Success: ${successfulUploads}, Failed: ${failedUploads}`);
-      
+      // Reset status for new file
       setUploadStatus({ 
         success: successfulUploads, 
         failed: failedUploads,
-        currentFile: finalMessage,
-        errorMessage: failedUploads > 0 ? `${failedUploads} file(s) failed to upload` : ""
+        currentFile: `Starting: ${file.name}`,
+        currentFileIndex: fileIndex + 1,
+        totalFiles: filesToUpload.length,
+        progress: 0,
+        stage: 'start',
+        currentPage: 0,
+        totalPages: 0,
+        pageProgress: 0,
+        chunksProcessed: 0,
+        totalChunks: 0,
+        errorMessage: ""
       });
 
-      // Refresh files if any succeeded
-      if (successfulUploads > 0) {
-        try {
-          await refreshFiles();
-        } catch (error) {
-          console.error("Failed to refresh files:", error);
-        }
-      }
+      try {
+        const formData = new FormData();
+        formData.append("file", file);
 
-      // Show success snackbar
-      if (successfulUploads > 0) {
-        setSnackbar({
-          open: true,
-          message: `Successfully uploaded ${successfulUploads} file(s)`,
-          severity: "success"
+        console.log(`Starting upload for: ${file.name}`);
+
+        // 1. Start the upload and get uploadId
+        const startResponse = await fetch(`${API_BASE_URL}/upload-and-ingest-stream`, {
+          method: "POST",
+          body: formData
         });
-      }
 
-      // If successful, handle mobile completion
-      if (successfulUploads > 0 && onMobileUploadComplete) {
-        setTimeout(() => {
-          onMobileUploadComplete();
-        }, 2000);
-      }
-      
-      // Clear selection after delay if successful
-      if (successfulUploads > 0) {
-        setTimeout(() => {
-          setSelectedFiles([]);
-          setDuplicateFiles([]);
-          setShowSelectedFiles(false);
-          if (fileInputRef.current) {
-            fileInputRef.current.value = "";
-          }
-        }, 1500);
-      }
-      
-    } catch (err) {
-      console.error("Upload process error:", err);
-      setUploadStatus({ 
-        success: 0, 
-        failed: filesToUpload.length,
-        currentFile: "Upload process failed",
-        errorMessage: err.message || "Unknown error"
-      });
-    } finally {
-      setTimeout(() => {
-        setUploading(false);
-        if (setIsUploading) {
-          setIsUploading(false);
+        if (!startResponse.ok) {
+          throw new Error(`Upload start failed: ${startResponse.status}`);
         }
-      }, 1000);
-    }
-  };
 
-  // Cancel upload and clear selection
+        const { uploadId } = await startResponse.json();
+        console.log(`Upload started with ID: ${uploadId}`);
+
+        // 2. Connect to SSE progress stream
+        const eventSource = new EventSource(
+          `${API_BASE_URL}/upload-progress/${uploadId}`
+        );
+
+        // 3. Listen for progress updates
+        await new Promise((resolve, reject) => {
+          let lastProgress = 0;
+          const timeout = setTimeout(() => {
+            eventSource.close();
+            reject(new Error("Upload timeout - no progress for 60 seconds"));
+          }, 60000); // 60 second timeout
+
+          eventSource.onmessage = (event) => {
+            try {
+              clearTimeout(timeout); // Reset timeout on each message
+              
+              const data = JSON.parse(event.data);
+              console.log("Progress update:", data);
+              
+              // Update UI with progress
+              setUploadStatus(prev => ({
+                ...prev,
+                currentFile: data.message || prev.currentFile,
+                progress: data.progress || prev.progress,
+                stage: data.stage,
+                currentPage: data.currentPage || 0,
+                totalPages: data.totalPages || 0,
+                pageProgress: data.pageProgress || 0,
+                chunksProcessed: data.chunksProcessed || 0,
+                totalChunks: data.totalChunks || 0,
+                currentFileIndex: fileIndex + 1,
+                totalFiles: filesToUpload.length
+              }));
+              
+              lastProgress = data.progress || lastProgress;
+              
+              // Check for completion
+              if (data.stage === 'complete') {
+                console.log("Upload complete:", data.result);
+                eventSource.close();
+                clearTimeout(timeout);
+                resolve(data.result);
+              }
+              
+              // Check for errors
+              if (data.stage === 'error') {
+                console.error("Upload error:", data.error);
+                eventSource.close();
+                clearTimeout(timeout);
+                reject(new Error(data.error || "Upload failed"));
+              }
+            } catch (parseError) {
+              console.error("Failed to parse SSE data:", parseError);
+            }
+          };
+
+          eventSource.onerror = (error) => {
+            console.error("SSE connection error:", error);
+            eventSource.close();
+            clearTimeout(timeout);
+            
+            // Only reject if we haven't made any progress (likely a connection issue)
+            if (lastProgress === 0) {
+              reject(new Error("Failed to connect to upload progress stream"));
+            } else {
+              // If we were making progress, the upload might still complete
+              // Wait a bit and then check if we got to 100%
+              setTimeout(() => {
+                if (lastProgress < 100) {
+                  reject(new Error("Connection lost during upload"));
+                } else {
+                  resolve({ partial: true });
+                }
+              }, 2000);
+            }
+          };
+
+          // Cleanup on unmount or component update
+          return () => {
+            eventSource.close();
+            clearTimeout(timeout);
+          };
+        });
+
+        successfulUploads++;
+        
+        // Add to existing files map
+        const key = file.name.toLowerCase();
+        existingFilesMap.current.set(key, true);
+
+        console.log(`✓ Upload successful for: ${file.name}`);
+
+      } catch (uploadError) {
+        console.error(`Upload failed for ${file.name}:`, uploadError);
+        failedUploads++;
+        
+        setUploadStatus(prev => ({
+          ...prev,
+          errorMessage: uploadError.message,
+          failed: failedUploads
+        }));
+
+        // Show error for a moment before continuing
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+
+      // Small delay between files
+      if (fileIndex < filesToUpload.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+
+    // Final status update
+    setUploadStatus({ 
+      success: successfulUploads, 
+      failed: failedUploads,
+      currentFile: successfulUploads > 0 
+        ? `Uploaded ${successfulUploads} file(s) successfully!` 
+        : "All uploads failed",
+      currentFileIndex: filesToUpload.length,
+      totalFiles: filesToUpload.length,
+      progress: 100,
+      stage: 'complete',
+      errorMessage: failedUploads > 0 ? `${failedUploads} file(s) failed` : ""
+    });
+
+    // Refresh files list
+    if (successfulUploads > 0) {
+      console.log("Refreshing files list...");
+      await refreshFiles();
+      
+      setSnackbar({
+        open: true,
+        message: `Successfully uploaded ${successfulUploads} file(s)${failedUploads > 0 ? ` (${failedUploads} failed)` : ''}`,
+        severity: successfulUploads > 0 ? "success" : "error"
+      });
+
+      // Close upload section on mobile after success
+      if (onMobileUploadComplete) {
+        setTimeout(onMobileUploadComplete, 2000);
+      }
+
+      // Clear selection after a moment
+      setTimeout(() => {
+        setSelectedFiles([]);
+        setDuplicateFiles([]);
+        setShowSelectedFiles(false);
+        if (fileInputRef.current) {
+          fileInputRef.current.value = "";
+        }
+      }, 1500);
+    } else {
+      setSnackbar({
+        open: true,
+        message: "All uploads failed. Please try again.",
+        severity: "error"
+      });
+    }
+
+  } catch (err) {
+    console.error("Upload process error:", err);
+    setUploadStatus({ 
+      success: 0, 
+      failed: filesToUpload.length,
+      currentFile: "Upload process failed",
+      progress: 0,
+      errorMessage: err.message
+    });
+    
+    setSnackbar({
+      open: true,
+      message: `Upload failed: ${err.message}`,
+      severity: "error"
+    });
+  } finally {
+    // Always clean up after a delay
+    setTimeout(() => {
+      setUploading(false);
+      if (setIsUploading) {
+        setIsUploading(false);
+      }
+    }, 1000);
+  }
+};
+
+// Cancel upload and clear selection
   const handleCancelUpload = (e) => {
     if (e) {
       e.preventDefault();
@@ -566,9 +629,9 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
               </IconButton>
             )}
           </Box>
-          
-          {/* Current file being uploaded */}
-          {uploading && uploadStatus.currentFile && (
+
+            {/* Current file being uploaded */}
+            {uploading && uploadStatus.currentFile && (
             <Typography 
               fontFamily="MadeTommy" 
               fontSize={10} 
@@ -580,6 +643,7 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
               {uploadStatus.currentFile}
             </Typography>
           )}
+          
           
           <List dense sx={{ maxHeight: "150px", overflow: "auto", bgcolor: "#f9f9f9", borderRadius: 1 }}>
             {selectedFiles.map((file, index) => (
@@ -626,25 +690,63 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
             ))}
           </List>
           
-          {/* Upload Progress */}
-          {uploading && (
-            <Box sx={{ mt: 2, mb: 1 }}>
-              <Typography fontFamily="MadeTommy" fontSize={9} color="text.secondary" textAlign="center" mb={0.5}>
-                {uploadStatus.success + uploadStatus.failed} of {selectedFiles.length} files processed
-              </Typography>
-              <Box sx={{ width: '100%', bgcolor: '#E9ECEF', borderRadius: 1, height: 6, overflow: 'hidden' }}>
-                <Box 
-                  sx={{ 
-                    width: `${((uploadStatus.success + uploadStatus.failed) / selectedFiles.length) * 100}%`, 
-                    bgcolor: uploadStatus.failed > 0 ? '#ff4444' : '#4CAF50',
-                    height: '100%',
-                    transition: 'width 0.3s ease'
-                  }} 
-                />
+      
+            {/* Upload Progress - Enhanced with Page Info */}
+            {uploading && (
+              <Box sx={{ mt: 2, mb: 1 }}>
+                {/* File counter */}
+                {uploadStatus.currentFileIndex && (
+                  <Typography fontFamily="MadeTommy" fontSize={9} color="text.secondary" textAlign="center" mb={0.5}>
+                    File {uploadStatus.currentFileIndex} of {uploadStatus.totalFiles}
+                  </Typography>
+                )}
+                
+                {/* Page progress (if OCR stage) */}
+                {uploadStatus.stage === 'ocr' && uploadStatus.totalPages > 0 && (
+                  <Box sx={{ mb: 1 , mt:1}}>
+                    <Typography fontFamily="MadeTommy" fontSize={9} color="text.secondary" textAlign="center" mb={0.5}>
+                      Page {uploadStatus.currentPage || 0} of {uploadStatus.totalPages}: {Math.round(uploadStatus.pageProgress || 0)}%
+                    </Typography>
+                    
+                    {/* Per-page progress bar */}
+                    <Box sx={{ width: '100%', bgcolor: '#FFF3E0', borderRadius: 1, height: 6, overflow: 'hidden', mb: 0.5 }}>
+                      <Box 
+                        sx={{ 
+                          width: `${uploadStatus.pageProgress || 0}%`, 
+                          bgcolor: '#FF9800',
+                          height: '100%',
+                          transition: 'width 0.2s ease'
+                        }} 
+                      />
+                    </Box>
+                  </Box>
+                )}
+                
+                {/* Chunk progress (if embedding) */}
+                {uploadStatus.stage === 'embedding' && uploadStatus.totalChunks && (
+                  <Typography fontFamily="MadeTommy" fontSize={8} color="text.secondary" textAlign="center" mb={0.5}>
+                    Processing chunks: {uploadStatus.chunksProcessed || 0}/{uploadStatus.totalChunks}
+                  </Typography>
+                )}
+                
+                {/* Overall progress bar */}
+                <Box sx={{ width: '100%', bgcolor: '#E9ECEF', borderRadius: 1, height: 8, overflow: 'hidden', mb: 0.5 }}>
+                  <Box 
+                    sx={{ 
+                      width: `${uploadStatus.progress || 0}%`, 
+                      bgcolor: uploadStatus.stage === 'ocr' ? '#4CAF50' : '#2196F3',
+                      height: '100%',
+                      transition: 'width 0.3s ease'
+                    }} 
+                  />
+                </Box>
+                
+                {/* Overall percentage */}
+                <Typography fontFamily="MadeTommy" fontSize={9} color="text.secondary" textAlign="center">
+                  Overall: {Math.round(uploadStatus.progress || 0)}%
+                </Typography>
               </Box>
-            </Box>
-          )}
-          
+            )}
           {/* Upload Controls */}
           <Box display="flex" gap={1} mt={2}>
             <Button

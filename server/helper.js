@@ -73,3 +73,9 @@ export function chunkTextImproved(text, chunkSize = 500, overlap = 50) {
     
     return chunks;
   }
+
+  export function extractDates(text) {
+    const matches = text.match(/\b\d{1,2}\s(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s\d{4}\b/g);
+    return matches ? [...new Set(matches)] : [];
+  }
+  

@@ -12,11 +12,12 @@ import { chunkText } from "./utils/chunkText.js";
 import { cosineSimilarity, embed } from "./utils/embedding.js";
 
 import OpenAI from "openai";
-import { deduplicateChunks, normalizeOCR } from "./helper.js";
+import { deduplicateChunks, extractDates, normalizeOCR } from "./helper.js";
 
 // Get __dirname equivalent in ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const uploadProgress = new Map();
 
 console.log("ENV LOADED:", process.env.OPENAI_API_KEY?.slice(0, 5));
 
@@ -37,7 +38,7 @@ const client = new OpenAI({
 const upload = multer({ 
   dest: 'uploads/',
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit
+    fileSize: 30 * 1024 * 1024, // 10MB limit
   }
 });
 
@@ -198,30 +199,41 @@ app.get("/pdf/:id", async (req, res) => {
   const { id } = req.params;
 
   try {
-    // Get document info using correct column name
     const { data, error } = await supabase
       .from("documents")
-      .select("dropbox_path")
+      .select("dropbox_path, name")
       .eq("id", id)
       .single();
 
-    if (error || !data || !data.dropbox_path) {
+    if (error || !data?.dropbox_path) {
       return res.status(404).json({ error: "PDF not found" });
     }
 
-    // Create signed URL
+    // Get signed URL
     const { data: signed, error: signError } = await supabase.storage
       .from("pdfs")
       .createSignedUrl(data.dropbox_path, 60);
 
-    if (signError || !signed) {
-      return res.status(500).json({ error: "Failed to generate signed URL" });
+    if (signError || !signed?.signedUrl) {
+      return res.status(500).json({ error: "Failed to sign URL" });
     }
 
-    res.redirect(signed.signedUrl);
+    // Fetch PDF as buffer
+    const pdfRes = await fetch(signed.signedUrl);
+    const buffer = Buffer.from(await pdfRes.arrayBuffer());
+
+    // 🔑 FORCE INLINE RENDERING
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${encodeURIComponent(data.name || "document.pdf")}"`
+    );
+    res.setHeader("Accept-Ranges", "bytes");
+
+    res.send(buffer);
   } catch (err) {
     console.error("PDF serve error:", err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: "Failed to serve PDF" });
   }
 });
 
@@ -301,7 +313,7 @@ app.get("/pdf-text/:id", async (req, res) => {
     // 2. Fetch all chunks for this document
     const { data: chunks, error: chunkError } = await supabase
       .from("chunks")
-      .select("text")
+      .select("text, embedding, document_id")
       .eq("document_id", id)
       .order("chunk_index", { ascending: true });
 
@@ -326,57 +338,10 @@ app.get("/pdf-text/:id", async (req, res) => {
 
 
 // Chat endpoint
-async function generateAnswer(context, question) {
-  const response = await client.responses.create({
-    model: "gpt-4",
-    input: [
-      {
-        role: "system",
-        content: `
-        You are HealthPeaceGPT, a friendly, calm, and supportive health information assistant for Brian Peace. 
-        Your goal is to provide helpful, accurate, and empathetic guidance. 
-
-        You have **two response styles**:
-
-        1️⃣ **Conversational / ChatGPT style**  
-        - Use this style for general questions, lifestyle advice, or non-technical inquiries.  
-        - Write in a friendly, human-like tone with empathy and reassurance.  
-        - Keep answers engaging, easy to read, and natural.  
-        - You may include examples, tips, or analogies when helpful.  
-
-        2️⃣ **Structured summary style**  
-        - Use this style for technical questions, lab results, health reports, or any clinical data.  
-        - Format the answer clearly using these sections:
-
-          1. **High-level summary** – Overall results in a simple sentence.  
-          2. **What stands out / may need follow-up** – Key points or concerns.  
-          3. **Reassuring context** – Broader context, factors influencing the result.  
-          4. **Next-step guidance (non-medical)** – Practical, safe actions or suggestions; avoid medical prescriptions.  
-
-        **Automatic style selection:**  
-        - If the user input contains numbers, lab results, report excerpts, or clinical data, respond in **structured summary style**.  
-        - Otherwise, respond in **conversational style**.  
-
-        **General guidelines:**  
-        - Always prioritize safety and clarity.  
-        - Avoid giving medical diagnoses or prescriptions.  
-        - Encourage consulting healthcare professionals when appropriate.  
-        - Keep tone calm, supportive, and approachable regardless of style.
-                `
-      },
-      {
-        role: "user",
-        content: `Context:\n${context}\n\nQuestion:\n${question} Please answer clearly and concisely using bullet points where helpful. If there is uncertainty, explicitly state it.`
-      }
-    ]
-  });
-
-  return response.output_text;
-}
-
+// Updated chat endpoint with history support
 app.post("/chat", async (req, res) => {
   try {
-    const { message } = req.body;
+    const { message, history = [] } = req.body; // ✅ Accept history
     if (!message) {
       return res.status(400).json({ error: "Message required" });
     }
@@ -387,7 +352,7 @@ app.post("/chat", async (req, res) => {
     // 2. Load chunks
     const { data: chunks, error } = await supabase
       .from("chunks")
-      .select("text, embedding");
+      .select("text, embedding, document_id");
 
     if (error) throw error;
     if (!chunks || chunks.length === 0) {
@@ -398,27 +363,40 @@ app.post("/chat", async (req, res) => {
 
     // 3. Score chunks
     const scoredChunks = chunks
-      .map(c => {
-        let embedding = c.embedding;
+    .map(c => {
+      let embedding = c.embedding;
+      if (typeof embedding === "string") {
+        embedding = embedding
+        .replace(/[\[\]]/g, "")
+        .split(",")
+        .map(Number);
+      }
+      if (!Array.isArray(embedding)) return null;
 
-        // 🔥 Parse pgvector string → array
-        if (typeof embedding === "string") {
-          try {
-            embedding = JSON.parse(embedding);
-          } catch {
-            return null;
-          }
-        }
+      return {
+        text: c.text,
+        document_id: c.document_id,
+        score: cosineSimilarity(queryEmbedding, embedding),
+      };
+    })
+    .filter(Boolean);
 
-        if (!Array.isArray(embedding)) return null;
+    // 🔥 GROUP BY DOCUMENT
+    const byDoc = {};
+    for (const c of scoredChunks) {
+    byDoc[c.document_id] ||= [];
+    byDoc[c.document_id].push(c);
+    }
 
-        return {
-          text: c.text,
-          score: cosineSimilarity(queryEmbedding, embedding),
-        };
-      })
-      .filter(Boolean)
-      .sort((a, b) => b.score - a.score);
+    // 🔥 TAKE TOP PER DOCUMENT
+    const balancedChunks = Object.values(byDoc)
+    .flatMap(chunks =>
+      chunks
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3) // max 3 per document
+    )
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 12);
 
     // 🔍 DEBUG (keep this)
     console.log(
@@ -427,25 +405,20 @@ app.post("/chat", async (req, res) => {
         preview: c.text.slice(0, 60)
       }))
     );
+    const bestScore = balancedChunks[0]?.score ?? 0;
 
-    // 4. Take TOP-K only
-    const TOP_K = 12;
-    const topChunks = scoredChunks.slice(0, TOP_K);
-
-    const bestScore = topChunks[0]?.score ?? 0;
-
-    // 5. Guard: no relevant info
     if (bestScore < 0.15) {
       return res.json({
-        answer: "I couldn’t find relevant information in the uploaded documents to answer that question."
+        answer: "I couldn't find relevant information in the uploaded documents to answer that question."
       });
     }
 
-    // 6. Build context safely
-    const context = topChunks.map(c => c.text).join("\n\n");
 
-    // 7. Generate answer
-    const answer = await generateAnswer(context, message);
+    // 6. Build context safely
+    const context = balancedChunks.map(c => c.text).join("\n\n");
+
+    // 7. Generate answer WITH HISTORY
+    const answer = await generateAnswerWithHistory(context, message, history);
 
     res.json({ answer });
 
@@ -454,6 +427,82 @@ app.post("/chat", async (req, res) => {
     res.status(500).json({ error: "Chat failed" });
   }
 });
+
+// Updated generateAnswer function with history support
+async function generateAnswerWithHistory(context, question, history = []) {
+  // Build conversation messages array
+  const conversationMessages = [
+    {
+      role: "system",
+      content: `
+You are HealthPeaceGPT, a friendly, calm, and supportive health information assistant for Brian Peace. 
+Your goal is to provide helpful, accurate, and empathetic guidance. 
+
+**IMPORTANT: When asked for tables or trends:**
+1. Extract dates from the context (look for patterns like "24 Jun 2025", "June 2025", "24/01/002960")
+2. Extract health readings/values (look for numbers followed by units or percentages)
+3. Match dates with their corresponding values
+4. Present in markdown table format:
+
+| Date | Test/Reading | Value | Reference Range |
+|------|--------------|-------|-----------------|
+
+**Handling OCR text:**
+- The context contains OCR-extracted text with formatting issues
+- Focus on extracting numeric values and dates even if surrounded by artifacts
+- Ignore technical codes and focus on readable health metrics
+- Common patterns to look for:
+  - Dates: "Jun 2025", "24 Jun 2025"
+  - Lab values: "99.290%", "5.99 *10^3/mm3"
+  - Test names: "CD73", "WBC", "Hemoglobin", "Cholesterol"
+
+**General guidelines:**  
+- Always prioritize safety and clarity.  
+- Avoid giving medical diagnoses or prescriptions.
+- For unknown technical terms, focus on values and dates instead.
+- Encourage consulting healthcare professionals when appropriate.  
+- Keep tone calm, supportive, and approachable.
+- ALWAYS use markdown tables when presenting multiple health readings.
+- You have access to the conversation history, so you can reference previous questions and answers.
+
+IMPORTANT:
+If multiple dates are present, you MUST include ALL distinct dates found.
+Do NOT summarize only the most recent date unless explicitly asked.
+
+
+**Context from Brian's health documents:**
+${context}
+
+
+      `
+    }
+  ];
+
+  // Add conversation history (filter out any system messages or loading states)
+  history.forEach(msg => {
+    if (msg.role === "user" || msg.role === "assistant") {
+      conversationMessages.push({
+        role: msg.role,
+        content: msg.content
+      });
+    }
+  });
+
+  // Add current question
+  conversationMessages.push({
+    role: "user",
+    content: `${question}\n\nIMPORTANT: If this question asks about trends, multiple readings, or data over time, extract the dates and values and present them in a clear markdown table format.`
+  });
+
+  const response = await client.chat.completions.create({
+    model: "gpt-4",
+    messages: conversationMessages,
+    temperature: 0.7, // Slightly creative but consistent
+    max_tokens: 1000, // Adjust based on your needs
+  });
+
+  return response.choices[0].message.content;
+}
 
 // Health check endpoint
 app.get("/health", (req, res) => {
@@ -563,8 +612,7 @@ app.post("/upload-and-ingest", upload.single("file"), async (req, res) => {
     }
     
     // Limit chunks for faster processing
-    const maxChunks = 100; // Increased limit since we have unique chunks now
-    const chunks = uniqueChunks.slice(0, maxChunks);
+    const chunks = uniqueChunks;
     console.log(`📦 Processing ${chunks.length} chunks (limited from ${uniqueChunks.length})`);
 
     // Log first few chunks to verify they're different
@@ -624,6 +672,7 @@ app.post("/upload-and-ingest", upload.single("file"), async (req, res) => {
                 document_id: docId,
                 text: chunk,
                 chunk_index: i + idx,
+                dates:extractDates(chunk),
                 embedding: embedding
               };
             } catch (embedError) {
@@ -667,8 +716,9 @@ app.post("/upload-and-ingest", upload.single("file"), async (req, res) => {
       
       // Small delay between batches to avoid rate limits
       if (i + batchSize < chunks.length) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 200));
       }
+      
     }
 
     // 8. Clean up temporary file
@@ -736,6 +786,389 @@ app.post("/upload-and-ingest", upload.single("file"), async (req, res) => {
     });
   }
 });
+
+// 1. Main upload endpoint - starts the upload and returns uploadId
+app.post("/upload-and-ingest-stream", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+
+    const uploadId = uuidv4();
+    
+    // Initialize progress tracking
+    uploadProgress.set(uploadId, {
+      stage: 'start',
+      progress: 0,
+      message: 'Starting upload...',
+      fileName: req.file.originalname
+    });
+
+    // Return upload ID immediately
+    res.json({ 
+      uploadId,
+      fileName: req.file.originalname 
+    });
+
+    // Process upload in background
+    processUploadInBackground(req.file, uploadId).catch(err => {
+      console.error("Background upload error:", err);
+      uploadProgress.set(uploadId, {
+        stage: 'error',
+        error: err.message,
+        progress: 0
+      });
+    });
+
+  } catch (err) {
+    console.error("Upload initiation failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. SSE endpoint for progress updates
+app.get("/upload-progress/:uploadId", (req, res) => {
+  const { uploadId } = req.params;
+  
+  // Set up SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+  res.flushHeaders();
+
+  console.log(`SSE connection established for upload: ${uploadId}`);
+
+  // Send progress updates every 500ms
+  const interval = setInterval(() => {
+    const progress = uploadProgress.get(uploadId);
+    
+    if (!progress) {
+      console.log(`No progress found for ${uploadId}, ending SSE`);
+      clearInterval(interval);
+      res.write(`data: ${JSON.stringify({ stage: 'error', error: 'Upload not found' })}\n\n`);
+      res.end();
+      return;
+    }
+    
+    // Send progress update
+    res.write(`data: ${JSON.stringify(progress)}\n\n`);
+    
+    // If complete or error, clean up
+    if (progress.stage === 'complete' || progress.stage === 'error') {
+      console.log(`Upload ${uploadId} finished with stage: ${progress.stage}`);
+      clearInterval(interval);
+      
+      // Keep the progress for a bit longer for the client to receive it
+      setTimeout(() => {
+        uploadProgress.delete(uploadId);
+        res.end();
+      }, 2000);
+    }
+  }, 500);
+  
+  // Clean up on client disconnect
+  req.on('close', () => {
+    console.log(`SSE connection closed for upload: ${uploadId}`);
+    clearInterval(interval);
+  });
+});
+
+// 3. Background processing function
+async function processUploadInBackground(file, uploadId) {
+  let tempFilePath = file.path;
+  let storagePath = null;
+  let docId = null;
+  
+  // Helper to update progress
+  const updateProgress = (data) => {
+    const current = uploadProgress.get(uploadId) || {};
+    uploadProgress.set(uploadId, {
+      ...current,
+      ...data,
+      timestamp: Date.now()
+    });
+    console.log(`Progress update [${uploadId}]:`, data.stage, data.progress);
+  };
+
+  try {
+    docId = uuidv4();
+    const fileName = file.originalname || `unnamed-${docId}.pdf`;
+
+    console.log(`\n${"=".repeat(60)}`);
+    console.log(`Processing upload: ${fileName}`);
+    console.log(`Upload ID: ${uploadId}`);
+    console.log(`Document ID: ${docId}`);
+    console.log(`${"=".repeat(60)}\n`);
+
+    // 1. Read file
+    updateProgress({ 
+      stage: 'reading', 
+      progress: 10, 
+      message: 'Reading file...' 
+    });
+    
+    const buffer = await fs.readFile(tempFilePath);
+    console.log(`✓ File read: ${(buffer.length / 1024).toFixed(2)} KB`);
+
+    // 2. Upload to storage
+    updateProgress({ 
+      stage: 'uploading', 
+      progress: 20, 
+      message: 'Uploading to cloud storage...' 
+    });
+    
+    storagePath = `pdfs/${docId}-${fileName}`;
+    const { error: uploadError } = await supabase.storage
+      .from("pdfs")
+      .upload(storagePath, buffer, {
+        contentType: "application/pdf",
+        upsert: false
+      });
+
+    if (uploadError) {
+      throw new Error(`Storage upload failed: ${uploadError.message}`);
+    }
+    console.log(`✓ Uploaded to storage: ${storagePath}`);
+
+    // 3. Extract text with OCR
+    updateProgress({ 
+      stage: 'ocr', 
+      progress: 30, 
+      message: 'Starting OCR extraction...',
+      currentPage: 0,
+      totalPages: 0,
+      pageProgress: 0
+    });
+    
+    const rawText = normalizeOCR(
+      await extractTextWithOCR(buffer, (ocrProgressData) => {
+        updateProgress({
+          stage: 'ocr',
+          progress: 30 + (ocrProgressData.overallProgress * 0.3), // OCR: 30-60%
+          currentPage: ocrProgressData.currentPage,
+          totalPages: ocrProgressData.totalPages,
+          pageProgress: ocrProgressData.pageProgress,
+          message: ocrProgressData.message
+        });
+      })
+    );
+    
+    console.log(`✓ Text extracted: ${rawText.length} characters`);
+    
+    if (rawText.length === 0) {
+      throw new Error("No text could be extracted from PDF");
+    }
+
+    // 4. Chunking
+    updateProgress({ 
+      stage: 'chunking', 
+      progress: 60, 
+      message: 'Processing text...' 
+    });
+    
+    const allChunks = chunkText(rawText);
+    const uniqueChunks = deduplicateChunks(allChunks);
+    
+    console.log(`✓ Created ${allChunks.length} raw chunks`);
+    console.log(`✓ After deduplication: ${uniqueChunks.length} unique chunks`);
+    
+    if (uniqueChunks.length === 0) {
+      throw new Error("No valid chunks after deduplication");
+    }
+    
+    const chunks = uniqueChunks;
+    console.log(`📦 Processing ${chunks.length} chunks`);
+
+    // 5. Create document
+    updateProgress({ 
+      stage: 'database', 
+      progress: 65, 
+      message: 'Creating document record...' 
+    });
+    
+    const { data: docData, error: docError } = await supabase
+      .from("documents")
+      .insert({
+        id: docId,
+        name: fileName,
+        dropbox_path: storagePath
+      })
+      .select()
+      .single();
+
+    if (docError) {
+      throw new Error(`Failed to create document: ${docError.message}`);
+    }
+    console.log(`✓ Document record created`);
+
+    // 6. Embedding with progress
+    updateProgress({ 
+      stage: 'embedding', 
+      progress: 70, 
+      message: 'Generating embeddings...',
+      chunksProcessed: 0,
+      totalChunks: chunks.length
+    });
+    
+    const batchSize = 20;
+    let totalInserted = 0;
+    let totalFailed = 0;
+    const totalBatches = Math.ceil(chunks.length / batchSize);
+
+    for (let i = 0; i < chunks.length; i += batchSize) {
+      const batch = chunks.slice(i, i + batchSize);
+      const batchNum = Math.floor(i / batchSize) + 1;
+      
+      // Calculate embedding progress (70-95%)
+      const embeddingProgress = 70 + ((batchNum / totalBatches) * 25);
+      
+      updateProgress({ 
+        stage: 'embedding', 
+        progress: embeddingProgress,
+        message: `Embedding batch ${batchNum}/${totalBatches}...`,
+        chunksProcessed: i,
+        totalChunks: chunks.length
+      });
+
+      console.log(`\n   Batch ${batchNum}/${totalBatches} (${batch.length} chunks)`);
+
+      try {
+        console.log(`   - Generating embeddings...`);
+        const batchResults = await Promise.all(
+          batch.map(async (chunk, idx) => {
+            try {
+              const embedding = await embed(chunk);
+              
+              if (!Array.isArray(embedding) || embedding.length === 0) {
+                console.error(`   ⚠️  Invalid embedding for chunk ${i + idx}`);
+                return null;
+              }
+              
+              return {
+                id: uuidv4(),
+                document_id: docId,
+                text: chunk,
+                chunk_index: i + idx,
+                dates:extractDates(chunk),
+                embedding: embedding
+              };
+            } catch (embedError) {
+              console.error(`   ❌ Embedding error for chunk ${i + idx}:`, embedError.message);
+              return null;
+            }
+          })
+        );
+        
+        const validResults = batchResults.filter(r => r !== null);
+        
+        if (validResults.length === 0) {
+          console.log(`   ⚠️  All embeddings failed for this batch`);
+          totalFailed += batch.length;
+          continue;
+        }
+        
+        console.log(`   - Generated ${validResults.length}/${batch.length} embeddings`);
+        console.log(`   - Inserting to database...`);
+        
+        const { data: insertedData, error: chunkError } = await supabase
+          .from("chunks")
+          .insert(validResults)
+          .select();
+
+        if (chunkError) {
+          console.error(`   ❌ Chunk insert error:`, chunkError);
+          totalFailed += validResults.length;
+        } else {
+          const inserted = insertedData?.length || 0;
+          totalInserted += inserted;
+          console.log(`   ✓ Inserted ${inserted} chunks`);
+        }
+        
+      } catch (batchError) {
+        console.error(`   ❌ Batch ${batchNum} failed:`, batchError.message);
+        totalFailed += batch.length;
+      }
+      
+      if (i + batchSize < chunks.length) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+    }
+
+    // 7. Cleanup
+    await fs.remove(tempFilePath);
+    console.log("✓ Cleaned up temp file");
+
+    // 8. Complete
+    updateProgress({ 
+      stage: 'complete', 
+      progress: 100,
+      message: 'Upload complete!',
+      result: {
+        id: docId,
+        name: fileName,
+        chunks: totalInserted,
+        failed: totalFailed,
+        uniqueChunks: uniqueChunks.length,
+        duplicatesRemoved: allChunks.length - uniqueChunks.length
+      }
+    });
+
+    console.log(`\n${"=".repeat(60)}`);
+    console.log(`✅ UPLOAD COMPLETE`);
+    console.log(`   - Document: ${fileName}`);
+    console.log(`   - Chunks inserted: ${totalInserted}`);
+    console.log(`   - Chunks failed: ${totalFailed}`);
+    console.log(`${"=".repeat(60)}\n`);
+
+    if (totalInserted === 0) {
+      throw new Error("No chunks were successfully embedded and inserted");
+    }
+
+  } catch (err) {
+    console.error(`\n${"=".repeat(60)}`);
+    console.error(`❌ UPLOAD FAILED`);
+    console.error(`Error: ${err.message}`);
+    console.error(`${"=".repeat(60)}\n`);
+    
+    updateProgress({
+      stage: 'error',
+      error: err.message,
+      progress: 0
+    });
+    
+    // Cleanup on error
+    if (tempFilePath) {
+      try {
+        await fs.remove(tempFilePath);
+        console.log("✓ Cleaned up temp file");
+      } catch (cleanupErr) {
+        console.error("Failed to cleanup temp file:", cleanupErr.message);
+      }
+    }
+    
+    if (storagePath) {
+      try {
+        await supabase.storage.from("pdfs").remove([storagePath]);
+        console.log("✓ Cleaned up storage");
+      } catch (cleanupErr) {
+        console.error("Failed to cleanup storage:", cleanupErr.message);
+      }
+    }
+    
+    if (docId) {
+      try {
+        await supabase.from("chunks").delete().eq("document_id", docId);
+        await supabase.from("documents").delete().eq("id", docId);
+        console.log("✓ Cleaned up database records");
+      } catch (cleanupErr) {
+        console.error("Failed to cleanup database:", cleanupErr.message);
+      }
+    }
+  }
+}
+
+
 
 app.get("/files", async (req, res) => {
   const { data, error } = await supabase

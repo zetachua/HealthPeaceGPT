@@ -8,9 +8,10 @@ import Tesseract from 'tesseract.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename); // <--- ADD THIS LINE
-// OCR extraction using tesseract.js
-export async function extractTextWithOCR(buffer) {
+const __dirname = path.dirname(__filename);
+
+// OCR extraction using tesseract.js with parallel processing and progress callback
+export async function extractTextWithOCR(buffer, onProgress = null) {
   let tmpDir = null;
   
   try {
@@ -26,13 +27,10 @@ export async function extractTextWithOCR(buffer) {
 
     console.log(`Temporary PDF saved to: ${tmpPdfPath}`);
 
-    // Convert PDF pages to PNG images
-    // Requires `pdftoppm` installed: 
-    // - Linux: apt-get install poppler-utils
-    // - macOS: brew install poppler
-    // - Docker: RUN apt-get update && apt-get install -y poppler-utils
+    // Convert PDF pages to PNG images with lower resolution for faster OCR
     const outputPrefix = path.join(tmpDir, 'page');
-    await execAsync(`pdftoppm -png "${tmpPdfPath}" "${outputPrefix}"`);
+    // Add -r 150 for 150 DPI (faster than default 300 DPI, still readable)
+    await execAsync(`pdftoppm -png -r 150 "${tmpPdfPath}" "${outputPrefix}"`);
 
     // Read generated PNG files
     const files = await fs.readdir(tmpDir);
@@ -44,25 +42,91 @@ export async function extractTextWithOCR(buffer) {
 
     console.log(`Generated ${pngFiles.length} PNG files for OCR`);
 
-    let fullText = '';
-    for (const png of pngFiles) {
-      const imagePath = path.join(tmpDir, png);
-      console.log(`Processing page: ${png}`);
+    const totalPages = pngFiles.length;
+    const pageTexts = new Array(totalPages);
+    
+    // Process multiple pages in parallel (adjust based on server CPU cores)
+    const PARALLEL_PAGES = 4; // Process 2 pages at once (increase to 3-4 if you have more CPU cores)
+    
+    for (let i = 0; i < pngFiles.length; i += PARALLEL_PAGES) {
+      const batch = pngFiles.slice(i, i + PARALLEL_PAGES);
       
-      const { data: { text } } = await Tesseract.recognize(
-        imagePath, 
-        'eng', 
-        { 
-          logger: m => {
-            if (m.status === 'recognizing text') {
-              console.log(`OCR progress: ${Math.round(m.progress * 100)}%`);
-            }
+      console.log(`\nProcessing batch: pages ${i + 1} to ${Math.min(i + PARALLEL_PAGES, totalPages)}`);
+      
+      await Promise.all(
+        batch.map(async (png, batchIndex) => {
+          const pageIndex = i + batchIndex;
+          const imagePath = path.join(tmpDir, png);
+          const currentPage = pageIndex + 1;
+          
+          console.log(`  Processing page: ${png} (${currentPage}/${totalPages})`);
+          
+          // Report page start
+          if (onProgress) {
+            onProgress({
+              stage: 'ocr',
+              currentPage,
+              totalPages,
+              pageProgress: 0,
+              overallProgress: (pageIndex / totalPages) * 100,
+              message: `Processing page ${currentPage}/${totalPages}...`
+            });
           }
-        }
+          
+          // Perform OCR with optimized settings
+          const { data: { text } } = await Tesseract.recognize(
+            imagePath, 
+            'eng', 
+            { 
+              // Use AUTO for best accuracy, or SINGLE_BLOCK for faster processing
+              tessedit_pageseg_mode: Tesseract.PSM.AUTO,
+              logger: m => {
+                if (m.status === 'recognizing text') {
+                  const pageProgress = Math.round(m.progress * 100);
+                  
+                  // Only log every 20% to reduce console spam
+                  if (pageProgress % 20 === 0) {
+                    console.log(`    Page ${currentPage} OCR progress: ${pageProgress}%`);
+                  }
+                  
+                  // Report OCR progress for this page (throttled to every 10%)
+                  if (onProgress && pageProgress % 10 === 0) {
+                    const overallProgress = ((pageIndex + m.progress) / totalPages) * 100;
+                    onProgress({
+                      stage: 'ocr',
+                      currentPage,
+                      totalPages,
+                      pageProgress,
+                      overallProgress,
+                      message: `Page ${currentPage}/${totalPages}: ${pageProgress}%`
+                    });
+                  }
+                }
+              }
+            }
+          );
+          
+          pageTexts[pageIndex] = text;
+          
+          console.log(`  ✓ Completed page ${currentPage}/${totalPages}`);
+          
+          // Report page completion
+          if (onProgress) {
+            onProgress({
+              stage: 'ocr',
+              currentPage,
+              totalPages,
+              pageProgress: 100,
+              overallProgress: ((pageIndex + 1) / totalPages) * 100,
+              message: `Completed page ${currentPage}/${totalPages}`
+            });
+          }
+        })
       );
-      
-      fullText += text + '\n\n';
     }
+    
+    // Join all page texts
+    const fullText = pageTexts.join('\n\n');
 
     if (!fullText || fullText.trim().length === 0) {
       throw new Error('OCR could not extract any text from the PDF');
@@ -74,7 +138,6 @@ export async function extractTextWithOCR(buffer) {
   } catch (ocrError) {
     console.error('OCR extraction failed:', ocrError.message);
     
-    // Provide helpful error messages
     if (ocrError.message.includes('pdftoppm')) {
       throw new Error('Failed to convert PDF to images. Ensure poppler-utils is installed (apt-get install poppler-utils or brew install poppler)');
     }

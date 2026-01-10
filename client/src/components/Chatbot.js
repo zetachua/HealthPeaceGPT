@@ -69,23 +69,34 @@ export default function Chatbot() {
       </ReactMarkdown>
     );
   });
-
   
   const sendMessage = async () => {
     if (!input.trim()) return;
-
+  
     const userMessage = { role: "user", content: input };
     setMessages(prev => [...prev, userMessage]);
     setInput("");
-
+  
     const loadingMessage = { role: "assistant", content: "AI is thinking...", isLoading: true };
     setMessages(prev => [...prev, loadingMessage]);
-
+  
     try {
+      // ✅ Prepare conversation history (last 10 messages to avoid token limits)
+      const recentHistory = messages
+        .slice(-10) // Take last 10 messages
+        .filter(msg => !msg.isLoading && !msg.hasTyped) // Exclude loading/typing state flags
+        .map(msg => ({
+          role: msg.role,
+          content: msg.content
+        }));
+  
       const res = await fetch(`${API_BASE_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: input }),
+        body: JSON.stringify({ 
+          message: input,
+          history: recentHistory // ✅ Send conversation history
+        }),
       });
       
       let data;
@@ -98,7 +109,7 @@ export default function Chatbot() {
       const safeAnswer =
         res.ok && data?.answer
           ? data.answer
-          : "Sorry — I couldn’t retrieve an answer.";
+          : "Sorry — I couldn't retrieve an answer.";
       
       setMessages(prev =>
         prev.map(msg =>
@@ -113,7 +124,7 @@ export default function Chatbot() {
       console.error(err);
       setMessages(prev =>
         prev.map(msg =>
-          msg.isLoading ? { role: "assistant", content: "Sorry, something went wrong." ,hasTyped: false} : msg
+          msg.isLoading ? { role: "assistant", content: "Sorry, something went wrong." , hasTyped: false} : msg
         )
       );
     }
