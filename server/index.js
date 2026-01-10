@@ -341,18 +341,29 @@ app.get("/pdf-text/:id", async (req, res) => {
 // Updated chat endpoint with history support
 app.post("/chat", async (req, res) => {
   try {
-    const { message, history = [] } = req.body; // ✅ Accept history
+    const { message, history = [] } = req.body;
     if (!message) {
       return res.status(400).json({ error: "Message required" });
     }
 
+    // 🔥 NEW: Detect if user is searching by document name or date
+    const isDocumentQuery = /\b(document|file|pdf|report)\b/i.test(message);
+    const hasDateQuery = /\b(\d{4}|january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i.test(message);
+    
+    // Extract potential document name from query
+    const documentNameMatch = message.match(/(?:in|from|document|file|pdf)\s+["']?([^"']+)["']?/i);
+    const queriedDocName = documentNameMatch ? documentNameMatch[1].trim() : null;
+    
+    // Extract potential dates from query
+    const queriedDates = extractDates(message);
+
     // 1. Embed query
     const queryEmbedding = await embed(message);
 
-    // 2. Load chunks
+    // 2. Load chunks WITH METADATA
     const { data: chunks, error } = await supabase
       .from("chunks")
-      .select("text, embedding, document_id");
+      .select("text, embedding, document_id, dates, document_name, section_header");
 
     if (error) throw error;
     if (!chunks || chunks.length === 0) {
@@ -361,61 +372,113 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    // 3. Score chunks
+    // 3. Score chunks with HYBRID SCORING
     const scoredChunks = chunks
-    .map(c => {
-      let embedding = c.embedding;
-      if (typeof embedding === "string") {
-        embedding = embedding
-        .replace(/[\[\]]/g, "")
-        .split(",")
-        .map(Number);
-      }
-      if (!Array.isArray(embedding)) return null;
+      .map(c => {
+        let embedding = c.embedding;
+        if (typeof embedding === "string") {
+          embedding = embedding
+            .replace(/[\[\]]/g, "")
+            .split(",")
+            .map(Number);
+        }
+        if (!Array.isArray(embedding)) return null;
 
-      return {
-        text: c.text,
-        document_id: c.document_id,
-        score: cosineSimilarity(queryEmbedding, embedding),
-      };
-    })
-    .filter(Boolean);
+        // Calculate semantic similarity
+        let score = cosineSimilarity(queryEmbedding, embedding);
+        
+        // 🔥 BOOST SCORE if document name matches
+        if (queriedDocName && c.document_name) {
+          const docNameLower = c.document_name.toLowerCase();
+          const queryNameLower = queriedDocName.toLowerCase();
+          if (docNameLower.includes(queryNameLower) || queryNameLower.includes(docNameLower)) {
+            score *= 1.5; // 50% boost for document name match
+            console.log(`📄 Boosted score for document match: ${c.document_name}`);
+          }
+        }
+        
+        // 🔥 BOOST SCORE if section header matches
+        if (c.section_header) {
+          const headerLower = c.section_header.toLowerCase();
+          const messageLower = message.toLowerCase();
+          const headerWords = headerLower.split(/\s+/);
+          const matchingWords = headerWords.filter(word => 
+            word.length > 3 && messageLower.includes(word)
+          );
+          if (matchingWords.length > 0) {
+            const headerBoost = 1 + (matchingWords.length * 0.2); // 20% boost per matching word
+            score *= headerBoost;
+            console.log(`📋 Boosted score for header match: ${c.section_header} (${headerBoost.toFixed(2)}x)`);
+          }
+        }
+        
+        // 🔥 BOOST SCORE if dates match
+        if (queriedDates.length > 0 && c.dates && c.dates.length > 0) {
+          const hasMatchingDate = queriedDates.some(qd => 
+            c.dates.some(cd => cd.includes(qd) || qd.includes(cd))
+          );
+          if (hasMatchingDate) {
+            score *= 1.3; // 30% boost for date match
+            console.log(`📅 Boosted score for date match: ${c.dates.join(', ')}`);
+          }
+        }
+
+        return {
+          text: c.text,
+          document_id: c.document_id,
+          document_name: c.document_name,
+          section_header: c.section_header,
+          dates: c.dates,
+          score: score,
+        };
+      })
+      .filter(Boolean);
 
     // 🔥 GROUP BY DOCUMENT
     const byDoc = {};
     for (const c of scoredChunks) {
-    byDoc[c.document_id] ||= [];
-    byDoc[c.document_id].push(c);
+      byDoc[c.document_id] ||= [];
+      byDoc[c.document_id].push(c);
     }
 
-    // 🔥 TAKE TOP PER DOCUMENT
+    // 🔥 TAKE TOP PER DOCUMENT (increased for better coverage)
     const balancedChunks = Object.values(byDoc)
-    .flatMap(chunks =>
-      chunks
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 3) // max 3 per document
-    )
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 12);
+      .flatMap(chunks =>
+        chunks
+          .sort((a, b) => b.score - a.score)
+          .slice(0, 5) // Increased from 3 to 5
+      )
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10); // Increased from 12 to 10
 
-    // 🔍 DEBUG (keep this)
-    console.log(
-      scoredChunks.slice(0, 5).map(c => ({
-        score: Number(c.score.toFixed(3)),
-        preview: c.text.slice(0, 60)
-      }))
-    );
+    // 🔍 DEBUG
+    console.log('\n🔍 Top scored chunks:');
+    balancedChunks.slice(0, 5).forEach((c, i) => {
+      console.log(`${i + 1}. Score: ${c.score.toFixed(3)} | Doc: ${c.document_name} | Header: ${c.section_header || 'N/A'} | Dates: ${c.dates?.join(', ') || 'N/A'}`);
+      console.log(`   Preview: ${c.text.slice(0, 80)}...`);
+    });
+
     const bestScore = balancedChunks[0]?.score ?? 0;
+    console.log(bestScore, "bestScore")
 
-    if (bestScore < 0.15) {
+    if (bestScore < 0.1) {
       return res.json({
         answer: "I couldn't find relevant information in the uploaded documents to answer that question."
       });
     }
 
-
-    // 6. Build context safely
-    const context = balancedChunks.map(c => c.text).join("\n\n");
+    // 6. Build context WITH METADATA
+    const context = balancedChunks
+      .map(c => {
+        const metadata = [];
+        if (c.document_name) metadata.push(`Document: ${c.document_name}`);
+        if (c.section_header) metadata.push(`Section: ${c.section_header}`);
+        if (c.dates && c.dates.length > 0) metadata.push(`Dates: ${c.dates.join(', ')}`);
+        
+        const metadataStr = metadata.length > 0 ? `[${metadata.join(' | ')}]\n` : '';
+        return `${metadataStr}${c.text}`;
+      })
+      .join("\n\n");
 
     // 7. Generate answer WITH HISTORY
     const answer = await generateAnswerWithHistory(context, message, history);
@@ -434,44 +497,50 @@ async function generateAnswerWithHistory(context, question, history = []) {
   const conversationMessages = [
     {
       role: "system",
-      content: `
-You are HealthPeaceGPT, a friendly, calm, and supportive health information assistant for Brian Peace. 
-Your goal is to provide helpful, accurate, and empathetic guidance. 
+      content: `You are HealthPeaceGPT, a friendly, insightful health assistant for Brian Peace.
+            **Your Role:**
+            You're not just summarizing data—you're helping Brian understand his health story.
 
-**IMPORTANT: When asked for tables or trends:**
-1. Extract dates from the context (look for patterns like "24 Jun 2025", "June 2025", "24/01/002960")
-2. Extract health readings/values (look for numbers followed by units or percentages)
-3. Match dates with their corresponding values
-4. Present in markdown table format:
+            **When responding:**
 
-| Date | Test/Reading | Value | Reference Range |
-|------|--------------|-------|-----------------|
+            1. **Connect the dots**: Look for patterns across different test results and time periods
+              - Example: "Your reflux diagnosis aligns with your previous digestive concerns"
+              
+            2. **Provide context**: Help Brian understand what results mean
+              - Instead of: "HbA1c: 4.9%"
+              - Say: "Your HbA1c of 4.9% is excellent—well below the 5.7% prediabetes threshold"
 
-**Handling OCR text:**
-- The context contains OCR-extracted text with formatting issues
-- Focus on extracting numeric values and dates even if surrounded by artifacts
-- Ignore technical codes and focus on readable health metrics
-- Common patterns to look for:
-  - Dates: "Jun 2025", "24 Jun 2025"
-  - Lab values: "99.290%", "5.99 *10^3/mm3"
-  - Test names: "CD73", "WBC", "Hemoglobin", "Cholesterol"
+            3. **Prioritize**: What matters most? What needs attention?
+              - Highlight concerning trends or positive improvements
+              
+            4. **Be actionable**: Suggest next steps when appropriate
+              - "Based on your reflux diagnosis, you might consider..."
+              - "Your improving cholesterol suggests your current approach is working"
 
-**General guidelines:**  
-- Always prioritize safety and clarity.  
-- Avoid giving medical diagnoses or prescriptions.
-- For unknown technical terms, focus on values and dates instead.
-- Encourage consulting healthcare professionals when appropriate.  
-- Keep tone calm, supportive, and approachable.
-- ALWAYS use markdown tables when presenting multiple health readings.
-- You have access to the conversation history, so you can reference previous questions and answers.
+            5. **Use conversational tone**: 
+              - Write like you're talking to a friend, not filing a report
+              - Use "you" and "your" naturally
+              - Break complex medical terms into plain English
 
-IMPORTANT:
-If multiple dates are present, you MUST include ALL distinct dates found.
-Do NOT summarize only the most recent date unless explicitly asked.
+            6. **Show trends over time**: When multiple dates exist, highlight changes
+              - "Your cholesterol dropped from X to Y—that's great progress!"
+              
+            7. **Acknowledge gaps**: If data is missing or unclear, say so
+              - "I don't see recent blood pressure readings—worth checking at your next visit"
 
+            **For summaries specifically:**
+            - Start with the big picture ("Overall, your health shows...")
+            - Group related findings (digestive health, metabolic health, musculoskeletal, etc.)
+            - End with 2-3 key takeaways or action items
 
-**Context from Brian's health documents:**
-${context}
+            **Format guidelines:**
+            - Use markdown tables for comparing values over time
+            - Use bullet points for lists
+            - Bold key findings
+            - Keep paragraphs short (2-3 sentences max)
+
+            **Context from Brian's documents:**
+            ${context}
 
 
       `
@@ -495,7 +564,7 @@ ${context}
   });
 
   const response = await client.chat.completions.create({
-    model: "gpt-4",
+    model: "gpt-4-turbo-preview",
     messages: conversationMessages,
     temperature: 0.7, // Slightly creative but consistent
     max_tokens: 1000, // Adjust based on your needs
@@ -659,7 +728,7 @@ app.post("/upload-and-ingest", upload.single("file"), async (req, res) => {
         const batchResults = await Promise.all(
           batch.map(async (chunk, idx) => {
             try {
-              const embedding = await embed(chunk);
+              const embedding = await embed(chunk.text);
               
               // Verify embedding is valid
               if (!Array.isArray(embedding) || embedding.length === 0) {
@@ -670,9 +739,11 @@ app.post("/upload-and-ingest", upload.single("file"), async (req, res) => {
               return {
                 id: uuidv4(),
                 document_id: docId,
-                text: chunk,
+                text: chunk.text,
                 chunk_index: i + idx,
-                dates:extractDates(chunk),
+                dates:extractDates(chunk.text),
+                document_name: fileName, // 🔥 NEW: Store document name
+                section_header: chunk.header, // 🔥 NEW: Store section header              
                 embedding: embedding
               };
             } catch (embedError) {
@@ -1038,7 +1109,7 @@ async function processUploadInBackground(file, uploadId) {
         const batchResults = await Promise.all(
           batch.map(async (chunk, idx) => {
             try {
-              const embedding = await embed(chunk);
+              const embedding = await embed(chunk.text);
               
               if (!Array.isArray(embedding) || embedding.length === 0) {
                 console.error(`   ⚠️  Invalid embedding for chunk ${i + idx}`);
@@ -1048,9 +1119,11 @@ async function processUploadInBackground(file, uploadId) {
               return {
                 id: uuidv4(),
                 document_id: docId,
-                text: chunk,
+                text: chunk.text,
                 chunk_index: i + idx,
-                dates:extractDates(chunk),
+                dates:extractDates(chunk.text),
+                document_name: fileName, // 🔥 NEW: Store document name
+                section_header: chunk.header, // 🔥 NEW: Store section header              
                 embedding: embedding
               };
             } catch (embedError) {
