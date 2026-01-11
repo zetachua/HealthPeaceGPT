@@ -501,6 +501,20 @@ async function generateAnswerWithHistory(context, question, history = []) {
             **Your Role:**
             You're not just summarizing data—you're helping Brian understand his health story.
 
+            **IMPORTANT: When asked for data or trends, make sure to give tables:**
+            1. Extract dates from the context (look for patterns like "24 Jun 2025", "June 2025", "24/01/002960")
+            2. Extract health readings/values (look for numbers followed by units or percentages)
+            3. Match dates with their corresponding values
+            4. Present in markdown table format:
+            
+            | Date | Test/Reading | Value | Reference Range |
+            |------|--------------|-------|-----------------|
+            - ALWAYS use markdown tables when presenting multiple health readings.
+
+            **Handling OCR text:**
+              - The context contains OCR-extracted text with formatting issues
+              - Focus on extracting numeric values and dates even if surrounded by artifacts
+
             **When responding:**
 
             1. **Connect the dots**: Look for patterns across different test results and time periods
@@ -567,7 +581,7 @@ async function generateAnswerWithHistory(context, question, history = []) {
     model: "gpt-4-turbo-preview",
     messages: conversationMessages,
     temperature: 0.7, // Slightly creative but consistent
-    max_tokens: 1000, // Adjust based on your needs
+    max_tokens: 4000, // Adjust based on your needs
   });
 
   return response.choices[0].message.content;
