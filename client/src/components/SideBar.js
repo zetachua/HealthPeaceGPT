@@ -900,52 +900,6 @@ const handleUpload = async (e) => {
         }}
       />
 
-      {/* 🔥 FIX #11: Sorting Controls */}
-      <Box display="flex" gap={1} alignItems="center">
-        <Typography fontFamily="MadeTommy" fontSize={10} color="text.secondary">
-          Sort:
-        </Typography>
-        <Button
-          size="small"
-          onClick={() => {
-            const newSortBy = sortBy === "name" ? "date" : "name";
-            setSortBy(newSortBy);
-          }}
-          sx={{
-            fontSize: "10px",
-            fontFamily: "MadeTommy",
-            textTransform: "none",
-            color: "#2A2A2A",
-            backgroundColor: sortBy === "name" ? "#D9FFEA" : "#E9ECEF",
-            minWidth: "60px",
-            "&:hover": {
-              backgroundColor: sortBy === "name" ? "#C9EFDA" : "#D9D9D9",
-            },
-          }}
-        >
-          {sortBy === "name" ? "Name" : "Date"}
-        </Button>
-        <Button
-          size="small"
-          onClick={() => {
-            setSortOrder(sortOrder === "asc" ? "desc" : "asc");
-          }}
-          sx={{
-            fontSize: "10px",
-            fontFamily: "MadeTommy",
-            textTransform: "none",
-            color: "#2A2A2A",
-            backgroundColor: sortOrder === "asc" ? "#D9FFEA" : "#E9ECEF",
-            minWidth: "50px",
-            "&:hover": {
-              backgroundColor: sortOrder === "asc" ? "#C9EFDA" : "#D9D9D9",
-            },
-          }}
-        >
-          {sortOrder === "asc" ? "↑" : "↓"}
-        </Button>
-      </Box>
-
       {/* File List */}
       <Box sx={{ flex: 1, overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
         {filteredFiles.length === 0 ? (
