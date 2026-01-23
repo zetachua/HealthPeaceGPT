@@ -45,29 +45,59 @@ export default function Chatbot() {
   }, [messages]);
 
 
-  const TypewriterMarkdown = React.memo(function TypewriterMarkdown({ text = "", components, speed = 20, onDone }) {
+  // 🔥 FIX #10: Prevent re-rendering while typing
+  const TypewriterMarkdown = React.memo(function TypewriterMarkdown({ text = "", components, speed = 20, onDone, messageId }) {
     const [displayed, setDisplayed] = useState("");
+    const [isComplete, setIsComplete] = useState(false);
+    const intervalRef = useRef(null);
   
     useEffect(() => {
-      setDisplayed("");
-      let i = 0;
-      const interval = setInterval(() => {
-        setDisplayed(text.slice(0, i + 1));
-        i++;
-        if (i >= text.length) {
-          clearInterval(interval);
-          onDone?.();
+      // Only reset if text actually changed (not just re-render)
+      if (text && !isComplete) {
+        setDisplayed("");
+        setIsComplete(false);
+        let i = 0;
+        
+        // Clear any existing interval
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
         }
-      }, speed);
+        
+        intervalRef.current = setInterval(() => {
+          setDisplayed(text.slice(0, i + 1));
+          i++;
+          if (i >= text.length) {
+            clearInterval(intervalRef.current);
+            setIsComplete(true);
+            onDone?.();
+          }
+        }, speed);
+      }
   
-      return () => clearInterval(interval);
-    }, [text, speed, onDone]);
+      return () => {
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+        }
+      };
+    }, [text, messageId]); // Use messageId to track unique messages
+  
+    // If already complete, show full text immediately
+    if (isComplete || displayed.length === text.length) {
+      return (
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+          {text}
+        </ReactMarkdown>
+      );
+    }
   
     return (
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {displayed}
       </ReactMarkdown>
     );
+  }, (prevProps, nextProps) => {
+    // Only re-render if text or messageId actually changed
+    return prevProps.text === nextProps.text && prevProps.messageId === nextProps.messageId;
   });
   
   const sendMessage = async () => {
@@ -321,13 +351,14 @@ export default function Chatbot() {
             }}
           >
           {messages.map((msg, i) => (
-              <Box key={i} display="flex" justifyContent={msg.role === "user" ? "flex-end" : "flex-start"} mb={2}>
+              <Box key={`msg-${i}-${msg.content?.substring(0, 20)}`} display="flex" justifyContent={msg.role === "user" ? "flex-end" : "flex-start"} mb={2}>
                 <Paper sx={{ p: 1.5, maxWidth: '80%', bgcolor: msg.role === "user" ? mintColor : "#F8F9FA", borderRadius: 3 }}>
                   {msg.role === "assistant" && !msg.isLoading ? (
                     !msg.hasTyped ? (
                       <TypewriterMarkdown
                         text={msg.content}
                         speed={10}
+                        messageId={`msg-${i}`}
                         onDone={() => {
                           setMessages(prev =>
                             prev.map((m, idx) => idx === i ? { ...m, hasTyped: true } : m)

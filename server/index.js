@@ -346,6 +346,21 @@ app.post("/chat", async (req, res) => {
       return res.status(400).json({ error: "Message required" });
     }
 
+    // 🔥 FIX #1 & #2: Get full file list FIRST before processing
+    const { data: allDocuments, error: docListError } = await supabase
+      .from("documents")
+      .select("id, name, created_at")
+      .order("name", { ascending: true });
+
+    if (docListError) {
+      console.error("Error fetching document list:", docListError);
+    }
+
+    const fileList = allDocuments?.map(d => d.name) || [];
+    const fileListStr = fileList.length > 0 
+      ? `Available documents (${fileList.length} total):\n${fileList.map((name, i) => `${i + 1}. ${name}`).join('\n')}`
+      : "No documents are currently available.";
+
     // 🔥 NEW: Detect if user is searching by document name or date
     const isDocumentQuery = /\b(document|file|pdf|report)\b/i.test(message);
     const hasDateQuery = /\b(\d{4}|january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i.test(message);
@@ -360,10 +375,10 @@ app.post("/chat", async (req, res) => {
     // 1. Embed query
     const queryEmbedding = await embed(message);
 
-    // 2. Load chunks WITH METADATA
+    // 2. Load chunks WITH METADATA (including chunk_index for page reference)
     const { data: chunks, error } = await supabase
       .from("chunks")
-      .select("text, embedding, document_id, dates, document_name, section_header");
+      .select("text, embedding, document_id, dates, document_name, section_header, chunk_index");
 
     if (error) throw error;
     if (!chunks || chunks.length === 0) {
@@ -429,6 +444,7 @@ app.post("/chat", async (req, res) => {
           document_name: c.document_name,
           section_header: c.section_header,
           dates: c.dates,
+          chunk_index: c.chunk_index,
           score: score,
         };
       })
@@ -441,15 +457,15 @@ app.post("/chat", async (req, res) => {
       byDoc[c.document_id].push(c);
     }
 
-    // 🔥 TAKE TOP PER DOCUMENT (increased for better coverage)
+    // 🔥 FIX #8: TAKE TOP PER DOCUMENT (increased for better coverage)
     const balancedChunks = Object.values(byDoc)
       .flatMap(chunks =>
         chunks
           .sort((a, b) => b.score - a.score)
-          .slice(0, 5) // Increased from 3 to 5
+          .slice(0, 20) // Increased from 5 to 8 for better coverage
       )
       .sort((a, b) => b.score - a.score)
-      .slice(0, 10); // Increased from 12 to 10
+      .slice(0, 30); // Increased from 10 to 15 for better document coverage
 
     // 🔍 DEBUG
     console.log('\n🔍 Top scored chunks:');
@@ -461,27 +477,32 @@ app.post("/chat", async (req, res) => {
     const bestScore = balancedChunks[0]?.score ?? 0;
     console.log(bestScore, "bestScore")
 
-    if (bestScore < 0.1) {
+    // 🔥 FIX #3 & #9: Quality check - only proceed if we have good matches
+    if (bestScore < 0.15) { // Increased threshold from 0.1 to 0.15
       return res.json({
-        answer: "I couldn't find relevant information in the uploaded documents to answer that question."
+        answer: "I couldn't find relevant information in the uploaded documents to answer that question. Please check if the information exists in your uploaded files, or try rephrasing your question."
       });
     }
 
-    // 6. Build context WITH METADATA
+    // 🔥 FIX #6: Build context WITH METADATA including chunk_index for source tracking
     const context = balancedChunks
-      .map(c => {
+      .map((c, idx) => {
         const metadata = [];
         if (c.document_name) metadata.push(`Document: ${c.document_name}`);
         if (c.section_header) metadata.push(`Section: ${c.section_header}`);
         if (c.dates && c.dates.length > 0) metadata.push(`Dates: ${c.dates.join(', ')}`);
+        if (c.chunk_index !== undefined) metadata.push(`Chunk: ${c.chunk_index}`);
         
         const metadataStr = metadata.length > 0 ? `[${metadata.join(' | ')}]\n` : '';
         return `${metadataStr}${c.text}`;
       })
       .join("\n\n");
 
-    // 7. Generate answer WITH HISTORY
-    const answer = await generateAnswerWithHistory(context, message, history);
+    // 🔥 FIX #5: Deduplicate data in context
+    const deduplicatedContext = deduplicateContextChunks(context);
+
+    // 7. Generate answer WITH HISTORY and file list
+    const answer = await generateAnswerWithHistory(deduplicatedContext, message, history, fileListStr, balancedChunks);
 
     res.json({ answer });
 
@@ -491,8 +512,29 @@ app.post("/chat", async (req, res) => {
   }
 });
 
+// Helper function to deduplicate context chunks
+function deduplicateContextChunks(context) {
+  const lines = context.split('\n\n');
+  const seen = new Set();
+  const unique = [];
+  
+  for (const line of lines) {
+    // Extract the actual text content (after metadata)
+    const textMatch = line.match(/\]\n(.+)/s);
+    const text = textMatch ? textMatch[1].trim() : line.trim();
+    const normalized = text.toLowerCase().replace(/\s+/g, ' ').substring(0, 200);
+    
+    if (!seen.has(normalized) && text.length > 20) {
+      seen.add(normalized);
+      unique.push(line);
+    }
+  }
+  
+  return unique.join('\n\n');
+}
+
 // Updated generateAnswer function with history support
-async function generateAnswerWithHistory(context, question, history = []) {
+async function generateAnswerWithHistory(context, question, history = [], fileListStr = "", chunks = []) {
   // Build conversation messages array
   const conversationMessages = [
     {
@@ -501,19 +543,40 @@ async function generateAnswerWithHistory(context, question, history = []) {
             **Your Role:**
             You're not just summarizing data—you're helping Brian understand his health story.
 
-            **IMPORTANT: When asked for data or trends, make sure to give tables:**
-            1. Extract dates from the context (look for patterns like "24 Jun 2025", "June 2025", "24/01/002960")
-            2. Extract health readings/values (look for numbers followed by units or percentages)
-            3. Match dates with their corresponding values
-            4. Present in markdown table format:
+            **CRITICAL: Available Documents**
+            ${fileListStr}
             
-            | Date | Test/Reading | Value | Reference Range |
-            |------|--------------|-------|-----------------|
-            - ALWAYS use markdown tables when presenting multiple health readings.
+            **IMPORTANT RULES:**
+            1. ONLY reference documents that are in the list above. NEVER make up or guess file names.
+            2. If asked about a document not in the list, say "I don't have access to that document. Available documents are: [list them]"
+            3. If data is missing or unclear, explicitly say "I don't have that information" or "This data is not available in the uploaded documents"
+            4. NEVER guess or make up data. If you're uncertain, say so clearly.
+
+            **When asked for data or trends, make sure to give tables:**
+            1. FIRST verify the data exists in the context before creating tables
+            2. Extract dates from the context (look for patterns like "24 Jun 2025", "June 2025", "24/01/002960")
+            3. Extract health readings/values (look for numbers followed by units or percentages)
+            4. Match dates with their corresponding values
+            5. ALWAYS include source information in tables:
+            
+            | Date | Test/Reading | Value | Reference Range | Source |
+            |------|--------------|-------|-----------------|--------|
+            | 24 Jun 2025 | LDL | 2.5 | <3.0 | Document: [filename], Section: [section] |
+            
+            - ALWAYS use markdown tables when presenting multiple health readings
+            - ALWAYS include the Source column with Document name and Section when available
+            - If source is not clear, write "Source: Unknown" rather than guessing
 
             **Handling OCR text:**
               - The context contains OCR-extracted text with formatting issues
               - Focus on extracting numeric values and dates even if surrounded by artifacts
+              - If text is unclear, acknowledge uncertainty
+
+            **Data Quality and Validation:**
+            - Before creating any table or listing values, verify the data actually exists in the context
+            - If you see conflicting values, mention the discrepancy
+            - If the same value appears multiple times, deduplicate and note the source
+            - If data quality is poor, say "The data appears incomplete or unclear"
 
             **When responding:**
 
@@ -539,16 +602,25 @@ async function generateAnswerWithHistory(context, question, history = []) {
             6. **Show trends over time**: When multiple dates exist, highlight changes
               - "Your cholesterol dropped from X to Y—that's great progress!"
               
-            7. **Acknowledge gaps**: If data is missing or unclear, say so
+            7. **Acknowledge gaps and uncertainty**: 
               - "I don't see recent blood pressure readings—worth checking at your next visit"
+              - "I don't have that information in the uploaded documents"
+              - "The data for [X] appears incomplete or unclear"
+              - NEVER make up information when data is missing
+
+            8. **Medical interpretations:**
+              - Only provide interpretations when you have clear, reliable data
+              - Add disclaimers: "Based on the available data..." or "According to the documents..."
+              - If uncertain, say "I cannot provide a definitive interpretation without more complete data"
 
             **For summaries specifically:**
             - Start with the big picture ("Overall, your health shows...")
             - Group related findings (digestive health, metabolic health, musculoskeletal, etc.)
             - End with 2-3 key takeaways or action items
+            - Note any data gaps or limitations
 
             **Format guidelines:**
-            - Use markdown tables for comparing values over time
+            - Use markdown tables for comparing values over time (with Source column)
             - Use bullet points for lists
             - Bold key findings
             - Keep paragraphs short (2-3 sentences max)
@@ -574,7 +646,10 @@ async function generateAnswerWithHistory(context, question, history = []) {
   // Add current question
   conversationMessages.push({
     role: "user",
-    content: `${question}\n\nIMPORTANT: If this question asks about trends, multiple readings, or data over time, extract the dates and values and present them in a clear markdown table format.`
+    content: `${question}\n\nIMPORTANT: 
+    - If this question asks about trends, multiple readings, or data over time, FIRST verify the data exists in the context, then extract the dates and values and present them in a clear markdown table format with Source column.
+    - If the requested data is not found in the context, explicitly say "I don't have that information" rather than guessing.
+    - Only reference documents that are in the available documents list.`
   });
 
   const response = await client.chat.completions.create({

@@ -10,11 +10,11 @@ export const LayoutProvider = ({ children }) => {
   const [files, setFiles] = useState([]);
   const [loadingFiles, setLoadingFiles] = useState(true);
 
-  // Fetch files function
-  const fetchFiles = async () => {
+  // Fetch files function with sorting
+  const fetchFiles = async (sortBy = "name", order = "asc") => {
     try {
       setLoadingFiles(true);
-      const res = await fetch(`${API_BASE_URL}/files`);
+      const res = await fetch(`${API_BASE_URL}/files?sortBy=${sortBy}&order=${order}`);
       const data = await res.json();
       setFiles(data);
     } catch (error) {
@@ -24,9 +24,9 @@ export const LayoutProvider = ({ children }) => {
     }
   };
 
-  // Initial fetch
+  // Initial fetch with default sorting
   useEffect(() => {
-    fetchFiles();
+    fetchFiles("name", "asc");
   }, []);
 
   const openPDF = (pdf) => {
@@ -40,8 +40,8 @@ export const LayoutProvider = ({ children }) => {
   };
 
   // Add function to refresh files (call this after upload)
-  const refreshFiles = () => {
-    fetchFiles();
+  const refreshFiles = (sortBy = "name", order = "asc") => {
+    fetchFiles(sortBy, order);
   };
 
   return (

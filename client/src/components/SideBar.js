@@ -44,6 +44,8 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
     message: "",
     severity: "info"
   });
+  const [sortBy, setSortBy] = useState("name"); // "name" or "date"
+  const [sortOrder, setSortOrder] = useState("asc"); // "asc" or "desc"
 
   // Create a map of existing files for duplicate checking
   const existingFilesMap = useRef(new Map());
@@ -58,6 +60,17 @@ export default function SideBar({ textColor, onMobileUploadComplete, setIsUpload
     });
     console.log("Existing files map updated:", Array.from(existingFilesMap.current.keys()));
   }, [files]);
+
+  // 🔥 FIX #11: Fetch files with sorting when sort changes
+  // Note: Initial fetch is handled by LayoutContext, this only handles sort changes
+  const prevSortRef = useRef({ sortBy: "name", sortOrder: "asc" });
+  useEffect(() => {
+    // Only refetch if sort actually changed (not on initial mount)
+    if (prevSortRef.current.sortBy !== sortBy || prevSortRef.current.sortOrder !== sortOrder) {
+      prevSortRef.current = { sortBy, sortOrder };
+      refreshFiles(sortBy, sortOrder);
+    }
+  }, [sortBy, sortOrder]);
 
   // Keep upload section open when uploading
   useEffect(() => {
@@ -347,7 +360,7 @@ const handleUpload = async (e) => {
     // Refresh files list
     if (successfulUploads > 0) {
       console.log("Refreshing files list...");
-      await refreshFiles();
+      await refreshFiles(sortBy, sortOrder);
       
       setSnackbar({
         open: true,
@@ -451,7 +464,7 @@ const handleUpload = async (e) => {
       }
   
       // Refresh files from server just in case
-      await refreshFiles();
+      await refreshFiles(sortBy, sortOrder);
       
       // Show snackbar
       setSnackbar({
@@ -886,6 +899,52 @@ const handleUpload = async (e) => {
           },
         }}
       />
+
+      {/* 🔥 FIX #11: Sorting Controls */}
+      <Box display="flex" gap={1} alignItems="center">
+        <Typography fontFamily="MadeTommy" fontSize={10} color="text.secondary">
+          Sort:
+        </Typography>
+        <Button
+          size="small"
+          onClick={() => {
+            const newSortBy = sortBy === "name" ? "date" : "name";
+            setSortBy(newSortBy);
+          }}
+          sx={{
+            fontSize: "10px",
+            fontFamily: "MadeTommy",
+            textTransform: "none",
+            color: "#2A2A2A",
+            backgroundColor: sortBy === "name" ? "#D9FFEA" : "#E9ECEF",
+            minWidth: "60px",
+            "&:hover": {
+              backgroundColor: sortBy === "name" ? "#C9EFDA" : "#D9D9D9",
+            },
+          }}
+        >
+          {sortBy === "name" ? "Name" : "Date"}
+        </Button>
+        <Button
+          size="small"
+          onClick={() => {
+            setSortOrder(sortOrder === "asc" ? "desc" : "asc");
+          }}
+          sx={{
+            fontSize: "10px",
+            fontFamily: "MadeTommy",
+            textTransform: "none",
+            color: "#2A2A2A",
+            backgroundColor: sortOrder === "asc" ? "#D9FFEA" : "#E9ECEF",
+            minWidth: "50px",
+            "&:hover": {
+              backgroundColor: sortOrder === "asc" ? "#C9EFDA" : "#D9D9D9",
+            },
+          }}
+        >
+          {sortOrder === "asc" ? "↑" : "↓"}
+        </Button>
+      </Box>
 
       {/* File List */}
       <Box sx={{ flex: 1, overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
