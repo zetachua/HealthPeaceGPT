@@ -12,7 +12,7 @@ import { chunkText } from "./utils/chunkText.js";
 import { cosineSimilarity, embed } from "./utils/embedding.js";
 
 import OpenAI from "openai";
-import { deduplicateChunks, extractDates, normalizeOCR } from "./helper.js";
+import { deduplicateChunks, extractDates, extractDatesFromFilename, mergeDatesWithFilenamePriority, normalizeOCR } from "./helper.js";
 
 // Get __dirname equivalent in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -339,6 +339,8 @@ app.get("/pdf-text/:id", async (req, res) => {
 
 // Chat endpoint
 // Updated chat endpoint with history support
+// REPLACE your /chat endpoint with this deterministic version
+
 app.post("/chat", async (req, res) => {
   try {
     const { message, history = [] } = req.body;
@@ -346,7 +348,7 @@ app.post("/chat", async (req, res) => {
       return res.status(400).json({ error: "Message required" });
     }
 
-    // 🔥 FIX #1 & #2: Get full file list FIRST before processing
+    // Get full file list
     const { data: allDocuments, error: docListError } = await supabase
       .from("documents")
       .select("id, name, created_at")
@@ -361,24 +363,24 @@ app.post("/chat", async (req, res) => {
       ? `Available documents (${fileList.length} total):\n${fileList.map((name, i) => `${i + 1}. ${name}`).join('\n')}`
       : "No documents are currently available.";
 
-    // 🔥 NEW: Detect if user is searching by document name or date
-    const isDocumentQuery = /\b(document|file|pdf|report)\b/i.test(message);
-    const hasDateQuery = /\b(\d{4}|january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i.test(message);
+    // Detect query type
+    const testKeywords = ['hdl', 'ldl', 'cholesterol', 'glucose', 'blood', 'test', 'reading', 'level', 'value', 'triglyceride', 'a1c', 'hba1c'];
+    const isTestQuery = testKeywords.some(keyword => message.toLowerCase().includes(keyword));
     
-    // Extract potential document name from query
     const documentNameMatch = message.match(/(?:in|from|document|file|pdf)\s+["']?([^"']+)["']?/i);
     const queriedDocName = documentNameMatch ? documentNameMatch[1].trim() : null;
     
-    // Extract potential dates from query
     const queriedDates = extractDates(message);
 
     // 1. Embed query
     const queryEmbedding = await embed(message);
 
-    // 2. Load chunks WITH METADATA (including chunk_index for page reference)
+    // 2. Load chunks WITH METADATA
     const { data: chunks, error } = await supabase
       .from("chunks")
-      .select("text, embedding, document_id, dates, document_name, section_header, chunk_index");
+      .select("text, embedding, document_id, dates, document_name, section_header, chunk_index")
+      .order("document_id", { ascending: true }) // 🔥 CRITICAL: Order by document_id first
+      .order("chunk_index", { ascending: true }); // 🔥 Then by chunk_index
 
     if (error) throw error;
     if (!chunks || chunks.length === 0) {
@@ -387,9 +389,9 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    // 3. Score chunks with HYBRID SCORING
+    // 3. Score chunks with DETERMINISTIC HYBRID SCORING
     const scoredChunks = chunks
-      .map(c => {
+      .map((c, originalIndex) => { // 🔥 Keep original index for tie-breaking
         let embedding = c.embedding;
         if (typeof embedding === "string") {
           embedding = embedding
@@ -402,39 +404,59 @@ app.post("/chat", async (req, res) => {
         // Calculate semantic similarity
         let score = cosineSimilarity(queryEmbedding, embedding);
         
-        // 🔥 BOOST SCORE if document name matches
+        // 🔥 DETERMINISTIC: Round score to 6 decimal places to avoid floating-point drift
+        score = Math.round(score * 1000000) / 1000000;
+        
+        // Boost score if document name matches
         if (queriedDocName && c.document_name) {
           const docNameLower = c.document_name.toLowerCase();
           const queryNameLower = queriedDocName.toLowerCase();
           if (docNameLower.includes(queryNameLower) || queryNameLower.includes(docNameLower)) {
-            score *= 1.5; // 50% boost for document name match
+            score = Math.round(score * 1.5 * 1000000) / 1000000;
             console.log(`📄 Boosted score for document match: ${c.document_name}`);
           }
         }
         
-        // 🔥 BOOST SCORE if section header matches
+        // Boost score if section header matches
         if (c.section_header) {
           const headerLower = c.section_header.toLowerCase();
           const messageLower = message.toLowerCase();
-          const headerWords = headerLower.split(/\s+/);
+          const headerWords = headerLower.split(/\s+/).sort(); // 🔥 DETERMINISTIC: Sort words
           const matchingWords = headerWords.filter(word => 
             word.length > 3 && messageLower.includes(word)
           );
           if (matchingWords.length > 0) {
-            const headerBoost = 1 + (matchingWords.length * 0.2); // 20% boost per matching word
-            score *= headerBoost;
+            const headerBoost = 1 + (matchingWords.length * 0.2);
+            score = Math.round(score * headerBoost * 1000000) / 1000000;
             console.log(`📋 Boosted score for header match: ${c.section_header} (${headerBoost.toFixed(2)}x)`);
           }
         }
         
-        // 🔥 BOOST SCORE if dates match
+        // Boost score if dates match
         if (queriedDates.length > 0 && c.dates && c.dates.length > 0) {
-          const hasMatchingDate = queriedDates.some(qd => 
-            c.dates.some(cd => cd.includes(qd) || qd.includes(cd))
+          // 🔥 DETERMINISTIC: Sort dates before comparison
+          const sortedQueryDates = [...queriedDates].sort();
+          const sortedChunkDates = [...c.dates].sort();
+          
+          const hasMatchingDate = sortedQueryDates.some(qd => 
+            sortedChunkDates.some(cd => cd.includes(qd) || qd.includes(cd))
           );
           if (hasMatchingDate) {
-            score *= 1.3; // 30% boost for date match
+            score = Math.round(score * 1.3 * 1000000) / 1000000;
             console.log(`📅 Boosted score for date match: ${c.dates.join(', ')}`);
+          }
+        }
+        
+        // Boost score if chunk text contains test keywords
+        if (isTestQuery) {
+          const messageLower = message.toLowerCase();
+          const textLower = (c.text || '').toLowerCase();
+          const matchingTestKeyword = testKeywords.find(keyword => 
+            messageLower.includes(keyword) && textLower.includes(keyword)
+          );
+          if (matchingTestKeyword) {
+            score = Math.round(score * 1.4 * 1000000) / 1000000;
+            console.log(`🧪 Boosted score for test keyword match: ${matchingTestKeyword}`);
           }
         }
 
@@ -443,54 +465,289 @@ app.post("/chat", async (req, res) => {
           document_id: c.document_id,
           document_name: c.document_name,
           section_header: c.section_header,
-          dates: c.dates,
+          dates: c.dates ? [...c.dates].sort() : [], // 🔥 DETERMINISTIC: Sort dates
           chunk_index: c.chunk_index,
           score: score,
+          _originalIndex: originalIndex // 🔥 For final tie-breaking
         };
       })
       .filter(Boolean);
 
-    // 🔥 GROUP BY DOCUMENT
+    // 🔥 DETERMINISTIC SORTING: Multiple tie-breakers
+    scoredChunks.sort((a, b) => {
+      // 1. By score (with tolerance for floating point)
+      const scoreDiff = Math.abs(a.score - b.score);
+      if (scoreDiff > 0.000001) return b.score - a.score;
+      
+      // 2. By document_id (alphabetical)
+      const docCompare = (a.document_id || '').localeCompare(b.document_id || '');
+      if (docCompare !== 0) return docCompare;
+      
+      // 3. By chunk_index (numerical)
+      const chunkCompare = (a.chunk_index || 0) - (b.chunk_index || 0);
+      if (chunkCompare !== 0) return chunkCompare;
+      
+      // 4. By original index (final tie-breaker)
+      return a._originalIndex - b._originalIndex;
+    });
+
+    // 🔥 GROUP BY DOCUMENT - Deterministic grouping
     const byDoc = {};
     for (const c of scoredChunks) {
       byDoc[c.document_id] ||= [];
       byDoc[c.document_id].push(c);
     }
 
-    // 🔥 FIX #8: TAKE TOP PER DOCUMENT (increased for better coverage)
-    const balancedChunks = Object.values(byDoc)
-      .flatMap(chunks =>
-        chunks
-          .sort((a, b) => b.score - a.score)
-          .slice(0, 20) // Increased from 5 to 8 for better coverage
-      )
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 30); // Increased from 10 to 15 for better document coverage
+    // 🔥 DETERMINISTIC: Sort document IDs for consistent iteration
+    const sortedDocIds = Object.keys(byDoc).sort();
 
-    // 🔍 DEBUG
+    let balancedChunks;
+    
+    if (isTestQuery) {
+      // For test queries, get ALL chunks with the keyword, regardless of score
+      const messageLower = message.toLowerCase();
+      const matchingKeyword = testKeywords.find(kw => messageLower.includes(kw));
+      
+      console.log(`🔍 Test query detected for keyword: "${matchingKeyword}"`);
+      
+      // FIRST: Get ALL chunks that contain the keyword (from ALL scored chunks, not filtered)
+      const allKeywordChunks = scoredChunks.filter(chunk => {
+        const textLower = (chunk.text || '').toLowerCase();
+        return matchingKeyword && textLower.includes(matchingKeyword);
+      });
+      
+      console.log(`📊 Found ${allKeywordChunks.length} total chunks containing "${matchingKeyword}"`);
+      
+      // Group keyword chunks by year
+      const byYear = {};
+      allKeywordChunks.forEach(chunk => {
+        if (chunk.dates && Array.isArray(chunk.dates) && chunk.dates.length > 0) {
+          chunk.dates.forEach(date => {
+            const yearMatch = date.match(/\b(19|20)\d{2}\b/);
+            if (yearMatch) {
+              const year = yearMatch[0];
+              byYear[year] ||= [];
+              byYear[year].push(chunk);
+            }
+          });
+        }
+        // Also include chunks without explicit dates
+        if (!chunk.dates || chunk.dates.length === 0) {
+          byYear['no-date'] ||= [];
+          byYear['no-date'].push(chunk);
+        }
+      });
+      
+      // 🔥 DETERMINISTIC: Sort years
+      const sortedYears = Object.keys(byYear).filter(y => y !== 'no-date').sort();
+      
+      // Take ALL chunks with keyword from each year (no limit, no score filtering)
+      const chunksByYear = sortedYears.flatMap(year => {
+        const yearChunks = byYear[year] || [];
+        
+        // Deduplicate by document_id + chunk_index
+        const uniqueChunks = [];
+        const seen = new Set();
+        yearChunks.forEach(chunk => {
+          const key = `${chunk.document_id}-${chunk.chunk_index}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            uniqueChunks.push(chunk);
+          }
+        });
+        
+        // Sort deterministically (by document, then chunk_index)
+        uniqueChunks.sort((a, b) => {
+          const docCompare = (a.document_id || '').localeCompare(b.document_id || '');
+          if (docCompare !== 0) return docCompare;
+          const chunkCompare = (a.chunk_index || 0) - (b.chunk_index || 0);
+          if (chunkCompare !== 0) return chunkCompare;
+          return a._originalIndex - b._originalIndex;
+        });
+        
+        console.log(`📅 Year ${year}: ${uniqueChunks.length} chunks with keyword "${matchingKeyword}"`);
+        // Return ALL chunks with keyword (no slice limit, no score filtering)
+        return uniqueChunks;
+      });
+      
+      // Also include no-date chunks
+      if (byYear['no-date'] && byYear['no-date'].length > 0) {
+        const noDateChunks = byYear['no-date'];
+        const seen = new Set();
+        const uniqueNoDate = [];
+        noDateChunks.forEach(chunk => {
+          const key = `${chunk.document_id}-${chunk.chunk_index}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            uniqueNoDate.push(chunk);
+          }
+        });
+        chunksByYear.push(...uniqueNoDate);
+        console.log(`📅 No-date: ${uniqueNoDate.length} chunks with keyword "${matchingKeyword}"`);
+      }
+      
+      // Final deduplication
+      const seen = new Set();
+      const deduped = [];
+      
+      chunksByYear.forEach(chunk => {
+        const key = `${chunk.document_id}-${chunk.chunk_index}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          deduped.push(chunk);
+        }
+      });
+      
+      // 🔥 NEW: Add adjacent chunks (1 before and 1 after) for each keyword chunk
+      // This captures historical data from the same document
+      const keywordChunkKeys = new Set(deduped.map(c => `${c.document_id}-${c.chunk_index}`));
+      const adjacentChunks = [];
+      
+      deduped.forEach(keywordChunk => {
+        const docId = keywordChunk.document_id;
+        const chunkIdx = keywordChunk.chunk_index;
+        
+        // Find chunks from the same document that are adjacent
+        scoredChunks.forEach(chunk => {
+          if (chunk.document_id === docId) {
+            const key = `${chunk.document_id}-${chunk.chunk_index}`;
+            // Include chunk_index - 1 and chunk_index + 1
+            if ((chunk.chunk_index === chunkIdx - 1 || chunk.chunk_index === chunkIdx + 1) 
+                && !keywordChunkKeys.has(key)) {
+              adjacentChunks.push(chunk);
+            }
+          }
+        });
+      });
+      
+      // Deduplicate adjacent chunks
+      const seenAdjacent = new Set();
+      const uniqueAdjacent = [];
+      adjacentChunks.forEach(chunk => {
+        const key = `${chunk.document_id}-${chunk.chunk_index}`;
+        if (!seenAdjacent.has(key) && !keywordChunkKeys.has(key)) {
+          seenAdjacent.add(key);
+          uniqueAdjacent.push(chunk);
+        }
+      });
+      
+      console.log(`📎 Added ${uniqueAdjacent.length} adjacent chunks for context`);
+      
+      // Combine keyword chunks and adjacent chunks
+      const allChunksWithContext = [...deduped, ...uniqueAdjacent];
+      
+      // Sort deterministically: by document, then chunk_index (to keep adjacent chunks together)
+      allChunksWithContext.sort((a, b) => {
+        // First by document
+        const docCompare = (a.document_id || '').localeCompare(b.document_id || '');
+        if (docCompare !== 0) return docCompare;
+        
+        // Then by chunk index (to keep adjacent chunks together)
+        const chunkCompare = (a.chunk_index || 0) - (b.chunk_index || 0);
+        if (chunkCompare !== 0) return chunkCompare;
+        
+        // Final tie-breaker
+        return a._originalIndex - b._originalIndex;
+      });
+      
+      // Take ALL chunks (keyword + adjacent) for test queries
+      balancedChunks = allChunksWithContext;
+      
+      const yearCounts = {};
+      balancedChunks.forEach(chunk => {
+        if (chunk.dates && Array.isArray(chunk.dates)) {
+          chunk.dates.forEach(date => {
+            const yearMatch = date.match(/\b(19|20)\d{2}\b/);
+            if (yearMatch) {
+              const year = yearMatch[0];
+              yearCounts[year] = (yearCounts[year] || 0) + 1;
+            }
+          });
+        }
+      });
+      console.log(`📊 Test query - years found: ${sortedYears.join(', ')} (total: ${balancedChunks.length} keyword chunks)`);
+      console.log(`📊 Chunks per year: ${JSON.stringify(yearCounts)}`);
+      
+      // Log sample chunks from each year to verify
+      sortedYears.forEach(year => {
+        const yearChunks = balancedChunks.filter(c => {
+          return c.dates?.some(d => d.match(/\b(19|20)\d{2}\b/)?.[0] === year);
+        });
+        if (yearChunks.length > 0) {
+          console.log(`   ${year}: ${yearChunks.length} chunks - Sample: ${yearChunks[0].document_name}`);
+        }
+      });
+    } else {
+      // Non-test queries
+      balancedChunks = sortedDocIds
+        .flatMap(docId => byDoc[docId].slice(0, 20))
+        .slice(0, 30);
+    }
+
+    // Debug top chunks
     console.log('\n🔍 Top scored chunks:');
     balancedChunks.slice(0, 5).forEach((c, i) => {
-      console.log(`${i + 1}. Score: ${c.score.toFixed(3)} | Doc: ${c.document_name} | Header: ${c.section_header || 'N/A'} | Dates: ${c.dates?.join(', ') || 'N/A'}`);
+      console.log(`${i + 1}. Score: ${c.score.toFixed(6)} | Doc: ${c.document_name} | Dates: ${c.dates?.join(', ') || 'N/A'}`);
       console.log(`   Preview: ${c.text.slice(0, 80)}...`);
     });
 
-    const bestScore = balancedChunks[0]?.score ?? 0;
-    console.log(bestScore, "bestScore")
-
-    // 🔥 FIX #3 & #9: Quality check - only proceed if we have good matches
-    if (bestScore < 0.15) { // Increased threshold from 0.1 to 0.15
+    // For test queries, skip quality check if we have keyword chunks
+    // (we already filtered for keyword chunks, so they're all relevant)
+    if (!isTestQuery) {
+      const bestScore = balancedChunks[0]?.score ?? 0;
+      if (bestScore < 0.15) {
+        return res.json({
+          answer: "I couldn't find relevant information in the uploaded documents to answer that question."
+        });
+      }
+    } else if (balancedChunks.length === 0) {
+      // For test queries, only fail if we found NO keyword chunks at all
       return res.json({
-        answer: "I couldn't find relevant information in the uploaded documents to answer that question. Please check if the information exists in your uploaded files, or try rephrasing your question."
+        answer: "I couldn't find relevant information in the uploaded documents to answer that question."
       });
     }
 
-    // 🔥 FIX #6: Build context WITH METADATA including chunk_index for source tracking
+    // Extract all unique dates (deterministically)
+    const allAvailableDates = new Set();
+    balancedChunks.forEach(c => {
+      if (c.dates && Array.isArray(c.dates)) {
+        c.dates.forEach(d => allAvailableDates.add(d.toLowerCase()));
+      }
+    });
+    const sortedAvailableDates = Array.from(allAvailableDates).sort();
+
+    // Build context deterministically
+    // For each chunk, extract the primary date from filename and prioritize it
     const context = balancedChunks
-      .map((c, idx) => {
+      .map((c) => {
         const metadata = [];
         if (c.document_name) metadata.push(`Document: ${c.document_name}`);
         if (c.section_header) metadata.push(`Section: ${c.section_header}`);
-        if (c.dates && c.dates.length > 0) metadata.push(`Dates: ${c.dates.join(', ')}`);
+        
+        // Extract filename date and prioritize it
+        if (c.document_name) {
+          const filenameDates = extractDatesFromFilename(c.document_name);
+          if (filenameDates.primaryDate) {
+            // Use primary date from filename as the authoritative date
+            metadata.push(`Date: ${filenameDates.primaryDate} (from filename)`);
+            // Also include other dates that match the filename year
+            if (c.dates && c.dates.length > 0) {
+              const matchingDates = c.dates.filter(d => {
+                const dateYear = d.match(/\b(19|20)\d{2}\b/)?.[0];
+                return !dateYear || dateYear === filenameDates.primaryYear || d === filenameDates.primaryDate;
+              });
+              if (matchingDates.length > 1) {
+                metadata.push(`Additional dates: ${matchingDates.filter(d => d !== filenameDates.primaryDate).join(', ')}`);
+              }
+            }
+          } else if (c.dates && c.dates.length > 0) {
+            // No filename date, use all dates from chunk
+            metadata.push(`Dates: ${c.dates.join(', ')}`);
+          }
+        } else if (c.dates && c.dates.length > 0) {
+          metadata.push(`Dates: ${c.dates.join(', ')}`);
+        }
+        
         if (c.chunk_index !== undefined) metadata.push(`Chunk: ${c.chunk_index}`);
         
         const metadataStr = metadata.length > 0 ? `[${metadata.join(' | ')}]\n` : '';
@@ -498,11 +755,17 @@ app.post("/chat", async (req, res) => {
       })
       .join("\n\n");
 
-    // 🔥 FIX #5: Deduplicate data in context
     const deduplicatedContext = deduplicateContextChunks(context);
 
-    // 7. Generate answer WITH HISTORY and file list
-    const answer = await generateAnswerWithHistory(deduplicatedContext, message, history, fileListStr, balancedChunks);
+    // Generate answer
+    const answer = await generateAnswerWithHistory(
+      deduplicatedContext, 
+      message, 
+      history, 
+      fileListStr, 
+      balancedChunks,
+      sortedAvailableDates
+    );
 
     res.json({ answer });
 
@@ -533,107 +796,256 @@ function deduplicateContextChunks(context) {
   return unique.join('\n\n');
 }
 
+// Helper function to estimate tokens (rough approximation: ~4 chars per token)
+function estimateTokens(text) {
+  if (!text) return 0;
+  return Math.ceil(text.length / 4);
+}
+
 // Updated generateAnswer function with history support
-async function generateAnswerWithHistory(context, question, history = [], fileListStr = "", chunks = []) {
-  // Build conversation messages array
+// REPLACE your generateAnswerWithHistory function with this version
+
+async function generateAnswerWithHistory(context, question, history = [], fileListStr = "", chunks = [], availableDates = []) {
+  const MAX_TOKENS = 30000;
+  const RESERVE_TOKENS = 5000;
+  const MAX_CONTEXT_TOKENS = MAX_TOKENS - RESERVE_TOKENS;
+  
+  let optimizedContext = context;
+  let contextTokens = estimateTokens(context);
+  
+  // Check if this is a test query by checking if chunks contain test keywords
+  const isTestQueryContext = chunks.some(c => {
+    const textLower = (c.text || '').toLowerCase();
+    return ['hdl', 'ldl', 'cholesterol', 'glucose'].some(kw => textLower.includes(kw));
+  });
+  
+  if (contextTokens > MAX_CONTEXT_TOKENS) {
+    console.log(`⚠️  Context too large (${contextTokens} tokens), truncating to ${MAX_CONTEXT_TOKENS}`);
+    
+    if (isTestQueryContext) {
+      // For test queries, preserve year diversity when truncating
+      const byYear = {};
+      chunks.forEach(chunk => {
+        if (chunk.dates && Array.isArray(chunk.dates)) {
+          chunk.dates.forEach(date => {
+            const yearMatch = date.match(/\b(19|20)\d{2}\b/);
+            if (yearMatch) {
+              const year = yearMatch[0];
+              byYear[year] ||= [];
+              byYear[year].push(chunk);
+            }
+          });
+        } else {
+          byYear['no-date'] ||= [];
+          byYear['no-date'].push(chunk);
+        }
+      });
+      
+      const sortedYears = Object.keys(byYear).filter(y => y !== 'no-date').sort();
+      const selectedChunks = [];
+      let accumulatedTokens = 0;
+      
+      // Take chunks from each year proportionally
+      for (const year of sortedYears) {
+        const yearChunks = byYear[year];
+        for (const chunk of yearChunks) {
+          const chunkText = chunk.text || '';
+          const chunkTokens = estimateTokens(chunkText) + 150; // Add metadata overhead
+          if (accumulatedTokens + chunkTokens > MAX_CONTEXT_TOKENS * 0.95) break; // Leave 5% buffer
+          
+          selectedChunks.push(chunk);
+          accumulatedTokens += chunkTokens;
+        }
+      }
+      
+      optimizedContext = selectedChunks
+        .map((c) => {
+          const metadata = [];
+          if (c.document_name) metadata.push(`Document: ${c.document_name}`);
+          if (c.section_header) metadata.push(`Section: ${c.section_header}`);
+          
+          // Extract filename date and prioritize it
+          if (c.document_name) {
+            const filenameDates = extractDatesFromFilename(c.document_name);
+            if (filenameDates.primaryDate) {
+              metadata.push(`Date: ${filenameDates.primaryDate} (from filename)`);
+              if (c.dates && c.dates.length > 0) {
+                const matchingDates = c.dates.filter(d => {
+                  const dateYear = d.match(/\b(19|20)\d{2}\b/)?.[0];
+                  return !dateYear || dateYear === filenameDates.primaryYear || d === filenameDates.primaryDate;
+                });
+                if (matchingDates.length > 1) {
+                  metadata.push(`Additional dates: ${matchingDates.filter(d => d !== filenameDates.primaryDate).join(', ')}`);
+                }
+              }
+            } else if (c.dates && c.dates.length > 0) {
+              metadata.push(`Dates: ${c.dates.join(', ')}`);
+            }
+          } else if (c.dates && c.dates.length > 0) {
+            metadata.push(`Dates: ${c.dates.join(', ')}`);
+          }
+          
+          if (c.chunk_index !== undefined) metadata.push(`Chunk: ${c.chunk_index}`);
+          const metadataStr = metadata.length > 0 ? `[${metadata.join(' | ')}]\n` : '';
+          return `${metadataStr}${c.text}`;
+        })
+        .join("\n\n");
+      
+      console.log(`✓ Preserved year diversity: ${accumulatedTokens} tokens, years: ${sortedYears.join(', ')}`);
+    } else {
+      // For non-test queries, use simple truncation
+      let accumulatedTokens = 0;
+      const selectedChunks = [];
+      
+      for (const chunk of chunks) {
+        const chunkText = chunk.text || '';
+        const chunkTokens = estimateTokens(chunkText) + 150;
+        if (accumulatedTokens + chunkTokens > MAX_CONTEXT_TOKENS) break;
+        
+        selectedChunks.push(chunk);
+        accumulatedTokens += chunkTokens;
+      }
+      
+      optimizedContext = selectedChunks
+        .map((c) => {
+          const metadata = [];
+          if (c.document_name) metadata.push(`Document: ${c.document_name}`);
+          if (c.section_header) metadata.push(`Section: ${c.section_header}`);
+          
+          // Extract filename date and prioritize it
+          if (c.document_name) {
+            const filenameDates = extractDatesFromFilename(c.document_name);
+            if (filenameDates.primaryDate) {
+              metadata.push(`Date: ${filenameDates.primaryDate} (from filename)`);
+              if (c.dates && c.dates.length > 0) {
+                const matchingDates = c.dates.filter(d => {
+                  const dateYear = d.match(/\b(19|20)\d{2}\b/)?.[0];
+                  return !dateYear || dateYear === filenameDates.primaryYear || d === filenameDates.primaryDate;
+                });
+                if (matchingDates.length > 1) {
+                  metadata.push(`Additional dates: ${matchingDates.filter(d => d !== filenameDates.primaryDate).join(', ')}`);
+                }
+              }
+            } else if (c.dates && c.dates.length > 0) {
+              metadata.push(`Dates: ${c.dates.join(', ')}`);
+            }
+          } else if (c.dates && c.dates.length > 0) {
+            metadata.push(`Dates: ${c.dates.join(', ')}`);
+          }
+          
+          if (c.chunk_index !== undefined) metadata.push(`Chunk: ${c.chunk_index}`);
+          const metadataStr = metadata.length > 0 ? `[${metadata.join(' | ')}]\n` : '';
+          return `${metadataStr}${c.text}`;
+        })
+        .join("\n\n");
+    }
+  }
+  
+  // 🔥 CRITICAL: Create deterministic date list for the prompt
+  const dateListForPrompt = availableDates.length > 0
+    ? `AVAILABLE DATES IN CONTEXT (EXHAUSTIVE LIST):\n${availableDates.map((d, i) => `${i + 1}. ${d}`).join('\n')}\n\nYou MUST ONLY reference dates from this list. ANY date not in this list is HALLUCINATED.`
+    : 'No specific dates found in context.';
+
   const conversationMessages = [
     {
       role: "system",
-      content: `You are HealthPeaceGPT, a friendly, insightful health assistant for Brian Peace.
-            **Your Role:**
-            You're not just summarizing data—you're helping Brian understand his health story.
+      content: `You are HealthPeaceGPT, a health assistant for Brian Peace.
 
-            **CRITICAL: Available Documents**
-            ${fileListStr}
-            
-            **IMPORTANT RULES:**
-            1. ONLY reference documents that are in the list above. NEVER make up or guess file names.
-            2. If asked about a document not in the list, say "I don't have access to that document. Available documents are: [list them]"
-            3. If data is missing or unclear, explicitly say "I don't have that information" or "This data is not available in the uploaded documents"
-            4. NEVER guess or make up data. If you're uncertain, say so clearly.
+**CRITICAL ANTI-HALLUCINATION RULES - VIOLATION OF THESE IS A SEVERE ERROR:**
 
-            **When asked for data or trends, make sure to give tables:**
-            1. FIRST verify the data exists in the context before creating tables
-            2. Extract dates from the context (look for patterns like "24 Jun 2025", "June 2025", "24/01/002960")
-            3. Extract health readings/values (look for numbers followed by units or percentages)
-            4. Match dates with their corresponding values
-            5. ALWAYS include source information in tables:
-            
-            | Date | Test/Reading | Value | Reference Range | Source |
-            |------|--------------|-------|-----------------|--------|
-            | 24 Jun 2025 | LDL | 2.5 | <3.0 | Document: [filename], Section: [section] |
-            
-            - ALWAYS use markdown tables when presenting multiple health readings
-            - ALWAYS include the Source column with Document name and Section when available
-            - If source is not clear, write "Source: Unknown" rather than guessing
+1. **Document Names**: ONLY reference documents from this list:
+${fileListStr}
+   - If asked about a document NOT in this list, say: "I don't have access to that document."
+   - NEVER make up document names.
 
-            **Handling OCR text:**
-              - The context contains OCR-extracted text with formatting issues
-              - Focus on extracting numeric values and dates even if surrounded by artifacts
-              - If text is unclear, acknowledge uncertainty
+2. **Dates and Years**:
+   ${dateListForPrompt}
+   - Before mentioning ANY date or year, verify it's in the list above
+   - If a year/date is not in the list, say: "I don't have data for [year] in the uploaded documents"
+   - NEVER infer, create, or guess dates
 
-            **Data Quality and Validation:**
-            - Before creating any table or listing values, verify the data actually exists in the context
-            - If you see conflicting values, mention the discrepancy
-            - If the same value appears multiple times, deduplicate and note the source
-            - If data quality is poor, say "The data appears incomplete or unclear"
+3. **Data Values**:
+   - ONLY state values explicitly present in the context below
+   - If data is missing, say: "I don't have that information"
+   - If data is unclear, say: "The data appears incomplete or unclear"
+   - NEVER guess or make up numbers
 
-            **When responding:**
+4. **Completeness**:
+   - When showing health readings over time, ONLY include dates/years from the available dates list
+   - If context has data for 2023, 2024, 2025 but NOT 2016, do NOT create 2016 data
+   - Better to have gaps than to hallucinate
 
-            1. **Connect the dots**: Look for patterns across different test results and time periods
-              - Example: "Your reflux diagnosis aligns with your previous digestive concerns"
-              
-            2. **Provide context**: Help Brian understand what results mean
-              - Instead of: "HbA1c: 4.9%"
-              - Say: "Your HbA1c of 4.9% is excellent—well below the 5.7% prediabetes threshold"
+**CRITICAL: For queries about specific tests (HDL, LDL, etc.):**
+- Extract ALL matching values from the context - DO NOT MISS ANY
+- You MUST scan through the ENTIRE context and extract EVERY instance
+- Match each value with its corresponding date from the available dates list
+- Present in a table with columns: Date | Value | Reference Range | Source
+- If two chunks have the same date and value, include it only ONCE (deduplicate)
+- Sort chronologically (oldest to newest)
+- If you see data from 2023, 2024, 2025, 2026, you MUST include ALL of them
 
-            3. **Prioritize**: What matters most? What needs attention?
-              - Highlight concerning trends or positive improvements
-              
-            4. **Be actionable**: Suggest next steps when appropriate
-              - "Based on your reflux diagnosis, you might consider..."
-              - "Your improving cholesterol suggests your current approach is working"
+**When creating tables - STEP BY STEP PROCESS:**
+1. FIRST: Read through the ENTIRE context from start to finish
+2. SECOND: Identify EVERY chunk that mentions the requested test (e.g., "HDL")
+   - This includes chunks with the keyword AND their adjacent chunks (which may contain historical data from other years)
+3. THIRD: For EACH chunk found, extract:
+   - **Date**: 
+     * The metadata shows the document date (from filename), but the chunk text may contain historical data
+     * Look for dates in the chunk text itself - a 2024 document may show 2023/2022 test results in adjacent chunks
+     * Extract the ACTUAL date when the test was taken from the text (e.g., "2023", "2022", "26 Feb 2023")
+     * If text shows "2023" or "2022" alongside test values, use those years for that data point
+     * The document date (from filename) is when the document was created, but tests may be from earlier years
+   - Value (the numeric value for the test)
+   - Reference Range (if mentioned)
+   - Source (Document name from metadata)
+4. FOURTH: Create a list of ALL extracted entries
+5. FIFTH: Deduplicate by date+value (if same date has same value multiple times, keep one)
+6. SIXTH: Sort by date (oldest first)
+7. SEVENTH: Present in markdown table format
 
-            5. **Use conversational tone**: 
-              - Write like you're talking to a friend, not filing a report
-              - Use "you" and "your" naturally
-              - Break complex medical terms into plain English
+**CRITICAL DATE EXTRACTION RULES:**
+- Dates in metadata [Date: ...] with "(from filename)" are the AUTHORITATIVE source of truth for the document
+- Document filenames like "240304 Blood Test" mean the date is "04 Mar 2024" (240304 = YYMMDD format = 24/03/04)
+- ALWAYS use the date marked "(from filename)" as the primary date for that document
+- **IMPORTANT**: A single document may contain data from MULTIPLE years. For example, a 2024 document may show:
+  - Current 2024 test results (primary date from filename)
+  - Historical 2023 data (for comparison)
+  - Historical 2022 data (for comparison)
+- When extracting data, look for ALL years mentioned in the context, not just the filename year
+- If you see HDL data from 2022, 2023, and 2024 in the same document, include ALL of them in your table
+- The filename date (e.g., "04 Mar 2024") is the date the document was created/test was taken
+- Historical data within the document should be included with their respective years (2022, 2023, etc.)
+- When a chunk has "Date: 04 Mar 2024 (from filename)", that is the document date, but adjacent chunks may contain historical data from other years
 
-            6. **Show trends over time**: When multiple dates exist, highlight changes
-              - "Your cholesterol dropped from X to Y—that's great progress!"
-              
-            7. **Acknowledge gaps and uncertainty**: 
-              - "I don't see recent blood pressure readings—worth checking at your next visit"
-              - "I don't have that information in the uploaded documents"
-              - "The data for [X] appears incomplete or unclear"
-              - NEVER make up information when data is missing
+**CRITICAL REMINDER**: 
+- Documents often contain historical data. A 2024 document may show 2022, 2023, AND 2024 data in adjacent chunks
+- You MUST extract and include data from ALL years mentioned in the context, regardless of the document filename year
+- If you see HDL values with years 2022, 2023, 2024 in the same document, include ALL of them in your table
+- Missing any year that appears in the context is a SEVERE ERROR
 
-            8. **Medical interpretations:**
-              - Only provide interpretations when you have clear, reliable data
-              - Add disclaimers: "Based on the available data..." or "According to the documents..."
-              - If uncertain, say "I cannot provide a definitive interpretation without more complete data"
+Example correct response for "what's my HDL":
+| Date | HDL (mg/dL) | Reference Range | Source |
+|------|-------------|-----------------|--------|
+| 24 Jun 2025 | 51 | >40 | Document: 250621 Blood test SC21 BKK |
+| 14 Jan 2026 | 39 | >40 | Document: 260114 Blood Test SC21 Bkk |
 
-            **For summaries specifically:**
-            - Start with the big picture ("Overall, your health shows...")
-            - Group related findings (digestive health, metabolic health, musculoskeletal, etc.)
-            - End with 2-3 key takeaways or action items
-            - Note any data gaps or limitations
+**Tone and Style:**
+- Conversational and friendly
+- Explain medical terms in plain English
+- Highlight trends and patterns
+- Provide context for what values mean
+- Be actionable when appropriate
+- Acknowledge gaps in data explicitly
 
-            **Format guidelines:**
-            - Use markdown tables for comparing values over time (with Source column)
-            - Use bullet points for lists
-            - Bold key findings
-            - Keep paragraphs short (2-3 sentences max)
+**Context from Brian's documents:**
+${optimizedContext}
 
-            **Context from Brian's documents:**
-            ${context}
-
-
-      `
+**REMEMBER**: Consistency is critical. Every time you're asked the same question, you should give the SAME answer with the SAME data points. Only include data that exists in the context above.
+`
     }
   ];
 
-  // Add conversation history (filter out any system messages or loading states)
+  // Add conversation history
   history.forEach(msg => {
     if (msg.role === "user" || msg.role === "assistant") {
       conversationMessages.push({
@@ -643,23 +1055,86 @@ async function generateAnswerWithHistory(context, question, history = [], fileLi
     }
   });
 
-  // Add current question
+  // Add current question with explicit instructions
   conversationMessages.push({
     role: "user",
-    content: `${question}\n\nIMPORTANT: 
-    - If this question asks about trends, multiple readings, or data over time, FIRST verify the data exists in the context, then extract the dates and values and present them in a clear markdown table format with Source column.
-    - If the requested data is not found in the context, explicitly say "I don't have that information" rather than guessing.
-    - Only reference documents that are in the available documents list.`
+    content: `${question}
+
+CRITICAL REMINDERS FOR THIS RESPONSE:
+- Only use dates from the available dates list provided in the system prompt
+- Only reference documents from the file list in the system prompt
+- For test queries (HDL, LDL, etc.): Extract ALL instances from context, deduplicate by date+value, sort chronologically
+- Present data in markdown tables with Date | Value | Reference Range | Source columns
+- If the same question has been asked before in this conversation, your answer MUST be identical
+- NEVER create or infer data for years/dates not explicitly in the context`
   });
 
+  const totalTokens = conversationMessages.reduce((sum, msg) => 
+    sum + estimateTokens(msg.content), 0
+  );
+  console.log(`📊 Estimated input tokens: ${totalTokens}`);
+
+  // 🔥 CRITICAL: Use consistent parameters for deterministic output
   const response = await client.chat.completions.create({
     model: "gpt-4-turbo-preview",
     messages: conversationMessages,
-    temperature: 0.7, // Slightly creative but consistent
-    max_tokens: 4000, // Adjust based on your needs
+    temperature: 0, // 🔥 Changed from 0.1 to 0 for maximum determinism
+    max_tokens: 4000,
+    seed: 42,
+    top_p: 1, // 🔥 Explicitly set top_p for determinism
   });
 
-  return response.choices[0].message.content;
+  let answer = response.choices[0].message.content;
+  
+  // Post-process validation
+  answer = validateDatesInResponse(answer, availableDates);
+  
+  return answer;
+}
+
+// Helper to validate dates and log warnings
+function validateDatesInResponse(response, availableDates) {
+  if (!response || availableDates.length === 0) return response;
+  
+  // Extract all years mentioned (4-digit)
+  const yearPattern = /\b(19|20)\d{2}\b/g;
+  const mentionedYears = new Set();
+  let match;
+  while ((match = yearPattern.exec(response)) !== null) {
+    mentionedYears.add(match[0]);
+  }
+  
+  // Extract all dates mentioned
+  const datePatterns = [
+    /\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}\b/gi,
+    /\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}\b/gi,
+    /\b\d{1,2}\/\d{1,2}\/\d{4}\b/g
+  ];
+  
+  const mentionedDates = new Set();
+  datePatterns.forEach(pattern => {
+    let dateMatch;
+    while ((dateMatch = pattern.exec(response)) !== null) {
+      mentionedDates.add(dateMatch[0].toLowerCase());
+    }
+  });
+  
+  // Check for hallucinated dates
+  const invalidDates = [];
+  mentionedYears.forEach(year => {
+    const yearInContext = availableDates.some(d => d.includes(year));
+    if (!yearInContext) {
+      invalidDates.push(year);
+    }
+  });
+  
+  if (invalidDates.length > 0) {
+    console.error(`❌ HALLUCINATION DETECTED: Response mentions dates not in context: ${invalidDates.join(', ')}`);
+    console.error(`   Available dates were: ${availableDates.slice(0, 20).join(', ')}...`);
+    // In production, you might want to reject this response and retry
+  }
+  
+  return response;
 }
 
 // Health check endpoint
@@ -825,12 +1300,18 @@ app.post("/upload-and-ingest", upload.single("file"), async (req, res) => {
                 return null;
               }
               
+              // Extract dates from both chunk text and filename
+              // Filename dates are authoritative - prioritize them and filter conflicting text dates
+              const datesFromText = extractDates(chunk.text);
+              const filenameDates = extractDatesFromFilename(fileName);
+              const allDates = mergeDatesWithFilenamePriority(datesFromText, filenameDates);
+              
               return {
                 id: uuidv4(),
                 document_id: docId,
                 text: chunk.text,
                 chunk_index: i + idx,
-                dates:extractDates(chunk.text),
+                dates: allDates,
                 document_name: fileName, // 🔥 NEW: Store document name
                 section_header: chunk.header, // 🔥 NEW: Store section header              
                 embedding: embedding
@@ -1205,12 +1686,18 @@ async function processUploadInBackground(file, uploadId) {
                 return null;
               }
               
+              // Extract dates from both chunk text and filename
+              // Filename dates are authoritative - prioritize them and filter conflicting text dates
+              const datesFromText = extractDates(chunk.text);
+              const filenameDates = extractDatesFromFilename(fileName);
+              const allDates = mergeDatesWithFilenamePriority(datesFromText, filenameDates);
+              
               return {
                 id: uuidv4(),
                 document_id: docId,
                 text: chunk.text,
                 chunk_index: i + idx,
-                dates:extractDates(chunk.text),
+                dates: allDates,
                 document_name: fileName, // 🔥 NEW: Store document name
                 section_header: chunk.header, // 🔥 NEW: Store section header              
                 embedding: embedding

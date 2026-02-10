@@ -70,3 +70,112 @@ export function normalizeOCR(text) {
     
     return Array.from(dates);
   }
+
+  // Extract dates from filename (e.g., "240304" -> "04 Mar 2024")
+  // Returns object with { primaryDate, year, allDates } where primaryDate is the authoritative date
+  export function extractDatesFromFilename(filename) {
+    const dates = new Set();
+    let primaryDate = null;
+    let primaryYear = null;
+    
+    if (!filename) return { primaryDate: null, primaryYear: null, allDates: [] };
+    
+    // Pattern 1: YYMMDD format (e.g., "240304" = 24/03/04 = March 4, 2024)
+    // Matches 6-digit numbers at start of filename
+    const yymmddPattern = /^(\d{2})(\d{2})(\d{2})/;
+    const yymmddMatch = filename.match(yymmddPattern);
+    if (yymmddMatch) {
+      const [, yy, mm, dd] = yymmddMatch;
+      const year = parseInt(yy) < 50 ? 2000 + parseInt(yy) : 1900 + parseInt(yy); // Assume 2000s if < 50
+      const month = parseInt(mm);
+      const day = parseInt(dd);
+      
+      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const formattedDate = `${String(day).padStart(2, '0')} ${monthNames[month - 1]} ${year}`;
+        primaryDate = formattedDate;
+        primaryYear = String(year);
+        dates.add(formattedDate);
+        dates.add(String(year));
+      }
+    }
+    
+    // Pattern 2: YYYYMMDD format (e.g., "20240304" = 2024/03/04 = March 4, 2024)
+    if (!primaryDate) {
+      const yyyymmddPattern = /^(\d{4})(\d{2})(\d{2})/;
+      const yyyymmddMatch = filename.match(yyyymmddPattern);
+      if (yyyymmddMatch) {
+        const [, yyyy, mm, dd] = yyyymmddMatch;
+        const year = parseInt(yyyy);
+        const month = parseInt(mm);
+        const day = parseInt(dd);
+        
+        if (year >= 1900 && year <= 2100 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+          const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+          const formattedDate = `${String(day).padStart(2, '0')} ${monthNames[month - 1]} ${year}`;
+          primaryDate = formattedDate;
+          primaryYear = String(year);
+          dates.add(formattedDate);
+          dates.add(String(year));
+        }
+      }
+    }
+    
+    // Pattern 3: Extract any 4-digit year from filename (fallback)
+    if (!primaryYear) {
+      const yearPattern = /\b(19|20)\d{2}\b/g;
+      const yearMatches = filename.match(yearPattern);
+      if (yearMatches && yearMatches.length > 0) {
+        primaryYear = yearMatches[0]; // Use first year found
+        dates.add(primaryYear);
+      }
+    }
+    
+    return {
+      primaryDate: primaryDate, // The authoritative date from filename (e.g., "04 Mar 2024")
+      primaryYear: primaryYear, // The year from filename (e.g., "2024")
+      allDates: Array.from(dates) // All dates extracted (for backward compatibility)
+    };
+  }
+
+  // Merge dates from text and filename, prioritizing filename dates
+  export function mergeDatesWithFilenamePriority(datesFromText, filenameDates) {
+    const merged = new Set();
+    
+    // If we have a primary date from filename, use it and filter text dates by year
+    if (filenameDates.primaryDate) {
+      merged.add(filenameDates.primaryDate);
+      merged.add(filenameDates.primaryYear);
+      
+      // Only include text dates that match the filename year
+      if (filenameDates.primaryYear) {
+        datesFromText.forEach(date => {
+          // Include if it's the same year or if it's a full date that matches the year
+          const dateYear = date.match(/\b(19|20)\d{2}\b/)?.[0];
+          if (dateYear === filenameDates.primaryYear || !dateYear) {
+            // Only add if it doesn't conflict with the primary date
+            // Don't add standalone years that don't match
+            if (dateYear || date.includes(filenameDates.primaryYear)) {
+              merged.add(date);
+            }
+          }
+        });
+      }
+    } else {
+      // No filename date, use all dates from text
+      datesFromText.forEach(d => merged.add(d));
+      filenameDates.allDates.forEach(d => merged.add(d));
+    }
+    
+    // Sort: primary date first, then others
+    const sorted = Array.from(merged);
+    if (filenameDates.primaryDate) {
+      const primaryIndex = sorted.indexOf(filenameDates.primaryDate);
+      if (primaryIndex > 0) {
+        sorted.splice(primaryIndex, 1);
+        sorted.unshift(filenameDates.primaryDate);
+      }
+    }
+    
+    return sorted;
+  }
