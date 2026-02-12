@@ -597,7 +597,6 @@ app.post("/chat", async (req, res) => {
           deduped.push(chunk);
         }
       });
-      
       // 🔥 NEW: Add adjacent chunks (1 before and 1 after) for each keyword chunk
       // This captures historical data from the same document
       const keywordChunkKeys = new Set(deduped.map(c => `${c.document_id}-${c.chunk_index}`));
@@ -631,7 +630,7 @@ app.post("/chat", async (req, res) => {
         }
       });
       
-      console.log(`📎 Added ${uniqueAdjacent.length} adjacent chunks for context`);
+      console.log(`📎 Added ${uniqueAdjacent.length}/${adjacentChunks.length} adjacent chunks for context`);
       
       // Combine keyword chunks and adjacent chunks
       const allChunksWithContext = [...deduped, ...uniqueAdjacent];
@@ -1073,7 +1072,19 @@ CRITICAL REMINDERS FOR THIS RESPONSE:
     sum + estimateTokens(msg.content), 0
   );
   console.log(`📊 Estimated input tokens: ${totalTokens}`);
+  
+  // Check if optimizedContext contains 2024 documents
+  const has240226Documents = 
+  chunks.some(c => {
+    return c.document_name && c.document_name.includes('240226');
+  });
 
+  if (has240226Documents) {
+    console.log('\n📄 ========== OPTIMIZED CONTEXT (2024 Documents) ==========');
+    console.log(optimizedContext);
+    console.log('📄 ========== END OPTIMIZED CONTEXT ==========\n');
+  }
+  
   // 🔥 CRITICAL: Use consistent parameters for deterministic output
   const response = await client.chat.completions.create({
     model: "gpt-4-turbo-preview",
