@@ -68,6 +68,22 @@ export function normalizeOCR(text) {
     const pattern4 = /\b\d{1,2}\/\d{1,2}\/\d{4}\b/g;
     (text.match(pattern4) || []).forEach(d => dates.add(d));
     
+    // Pattern 5: "26/02/24", "26/07/23", "06/09/22" (DD/MM/YY) - common in lab reports
+    const pattern5 = /\b(\d{1,2})\/(\d{1,2})\/(\d{2})\b/g;
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    let m5;
+    while ((m5 = pattern5.exec(text)) !== null) {
+      const day = parseInt(m5[1], 10);
+      const month = parseInt(m5[2], 10);
+      const yy = parseInt(m5[3], 10);
+      const year = yy <= 50 ? 2000 + yy : 1900 + yy;
+      if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+        const formatted = `${String(day).padStart(2, '0')} ${monthNames[month - 1]} ${year}`;
+        dates.add(formatted);
+        dates.add(String(year));
+      }
+    }
+    
     return Array.from(dates);
   }
 

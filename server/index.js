@@ -706,12 +706,15 @@ app.post("/chat", async (req, res) => {
       });
     }
 
-    // Extract all unique dates (deterministically)
+    // Extract all unique dates: from chunk metadata AND from chunk text (so table headers like 26/07/23, 06/09/22 are allowed)
     const allAvailableDates = new Set();
     balancedChunks.forEach(c => {
       if (c.dates && Array.isArray(c.dates)) {
         c.dates.forEach(d => allAvailableDates.add(d.toLowerCase()));
       }
+      // Dates in chunk text (e.g. lab table columns "Date: 26/02/24 26/07/23 06/09/22") must be in the list so the model can cite them
+      const textDates = extractDates(c.text || '');
+      textDates.forEach(d => allAvailableDates.add(d.toLowerCase()));
     });
     const sortedAvailableDates = Array.from(allAvailableDates).sort();
 
@@ -755,6 +758,19 @@ app.post("/chat", async (req, res) => {
       .join("\n\n");
 
     const deduplicatedContext = deduplicateContextChunks(context);
+
+    // Log chunks being fed to the prompt (for verifying retrieval)
+    console.log('\n📥 CHUNKS FED TO PROMPT (context):');
+    balancedChunks.forEach((c, i) => {
+      const doc = c.document_name || 'unknown';
+      const idx = c.chunk_index !== undefined ? c.chunk_index : '?';
+      const dates = c.dates?.length ? c.dates.join(', ') : 'none';
+      const section = c.section_header || '';
+      const preview = (c.text || '').slice(0, 100).replace(/\n/g, ' ');
+      console.log(`  ${i + 1}. [${doc}] chunk_index=${idx} | dates=[${dates}] | section=${section}`);
+      console.log(`     preview: ${preview}${(c.text || '').length > 100 ? '...' : ''}`);
+    });
+    console.log(`  Total: ${balancedChunks.length} chunks\n`);
 
     // Generate answer
     const answer = await generateAnswerWithHistory(
@@ -812,6 +828,9 @@ async function generateAnswerWithHistory(context, question, history = [], fileLi
   let optimizedContext = context;
   let contextTokens = estimateTokens(context);
   
+  // Log which chunks were passed in (same as "fed to prompt" unless truncation happens below)
+  // console.log(`📋 generateAnswerWithHistory: received ${chunks.length} chunks, context ~${contextTokens} tokens`);
+  
   // Check if this is a test query by checking if chunks contain test keywords
   const isTestQueryContext = chunks.some(c => {
     const textLower = (c.text || '').toLowerCase();
@@ -819,7 +838,7 @@ async function generateAnswerWithHistory(context, question, history = [], fileLi
   });
   
   if (contextTokens > MAX_CONTEXT_TOKENS) {
-    console.log(`⚠️  Context too large (${contextTokens} tokens), truncating to ${MAX_CONTEXT_TOKENS}`);
+    // console.log(`⚠️  Context too large (${contextTokens} tokens), truncating to ${MAX_CONTEXT_TOKENS}`);
     
     if (isTestQueryContext) {
       // For test queries, preserve year diversity when truncating
@@ -891,6 +910,7 @@ async function generateAnswerWithHistory(context, question, history = [], fileLi
         .join("\n\n");
       
       console.log(`✓ Preserved year diversity: ${accumulatedTokens} tokens, years: ${sortedYears.join(', ')}`);
+      console.log(`📥 After truncation, ${selectedChunks.length} chunks in context: ${selectedChunks.map(c => `${c.document_name}#${c.chunk_index}`).join(', ')}`);
     } else {
       // For non-test queries, use simple truncation
       let accumulatedTokens = 0;
@@ -905,6 +925,7 @@ async function generateAnswerWithHistory(context, question, history = [], fileLi
         accumulatedTokens += chunkTokens;
       }
       
+      console.log(`📥 After truncation, ${selectedChunks.length} chunks in context: ${selectedChunks.map(c => `${c.document_name}#${c.chunk_index}`).join(', ')}`);
       optimizedContext = selectedChunks
         .map((c) => {
           const metadata = [];
@@ -975,6 +996,7 @@ ${fileListStr}
    - Better to have gaps than to hallucinate
 
 **CRITICAL: For queries about specific tests (HDL, LDL, etc.):**
+- **Regardless of how the user phrases the question** ("what's my HDL", "show my HDL", "HDL levels", "list all dates and readings for my HDL"), you MUST always return the **complete, exhaustive** list of all dates and readings from the context. Treat every such query as "list all the dates and readings for [this test]" - same full table, no summarization and no omitted rows.
 - Extract ALL matching values from the context - DO NOT MISS ANY
 - You MUST scan through the ENTIRE context and extract EVERY instance
 - Match each value with its corresponding date from the available dates list
@@ -1012,6 +1034,7 @@ ${fileListStr}
   - Historical 2022 data (for comparison)
 - When extracting data, look for ALL years mentioned in the context, not just the filename year
 - If you see HDL data from 2022, 2023, and 2024 in the same document, include ALL of them in your table
+- **Tables with multiple date columns**: Lab reports often have one row per test with SEVERAL date columns (e.g. "Date: 26/02/24 26/07/23 06/09/22" with values "54 51 44"). You MUST create ONE ROW PER DATE COLUMN: e.g. 26 Feb 2024 → 54, 26 Jul 2023 → 51, 06 Sep 2022 → 44. Do not only report the first or last column; the MIDDLE column(s) must also get their own row (e.g. 26 Jul 2023 must never be skipped)
 - The filename date (e.g., "04 Mar 2024") is the date the document was created/test was taken
 - Historical data within the document should be included with their respective years (2022, 2023, etc.)
 - When a chunk has "Date: 04 Mar 2024 (from filename)", that is the document date, but adjacent chunks may contain historical data from other years
@@ -1022,11 +1045,13 @@ ${fileListStr}
 - If you see HDL values with years 2022, 2023, 2024 in the same document, include ALL of them in your table
 - Missing any year that appears in the context is a SEVERE ERROR
 
-Example correct response for "what's my HDL":
-| Date | HDL (mg/dL) | Reference Range | Source |
-|------|-------------|-----------------|--------|
-| 24 Jun 2025 | 51 | >40 | Document: 250621 Blood test SC21 BKK |
-| 14 Jan 2026 | 39 | >40 | Document: 260114 Blood Test SC21 Bkk |
+Example when a document has a table with THREE date columns (26/02/24 26/07/23 06/09/22) and HDL values 54 51 44 - you MUST include all three rows:
+| Date | Value (mg/dL) | Reference Range | Source |
+|------|---------------|-----------------|--------|
+| 06 Sep 2022 | 44 | 40 - 59 | Document: 240226 Blood Test General.pdf |
+| 26 Jul 2023 | 51 | 40 - 59 | Document: 240226 Blood Test General.pdf |
+| 26 Feb 2024 | 54 | 40 - 59 | Document: 240226 Blood Test General.pdf |
+(Do not skip 26 Jul 2023; every date column gets one row.)
 
 **Tone and Style:**
 - Conversational and friendly
@@ -1039,7 +1064,7 @@ Example correct response for "what's my HDL":
 **Context from Brian's documents:**
 ${optimizedContext}
 
-**REMEMBER**: Consistency is critical. Every time you're asked the same question, you should give the SAME answer with the SAME data points. Only include data that exists in the context above.
+**REMEMBER**: Consistency is critical. Every time you're asked the same question, you should give the SAME answer with the SAME data points. Only include data that exists in the context above. For test/lab queries (HDL, LDL, etc.), always give the full list of all dates and readings regardless of whether the user said "what's my X" or "list all dates and readings for X".
 `
     }
   ];
@@ -1054,7 +1079,10 @@ ${optimizedContext}
     }
   });
 
-  // Add current question with explicit instructions
+  // Add current question with explicit instructions (for test queries, reinforce "complete list" so phrasing doesn't change result)
+  const testQueryReminder = isTestQueryContext
+    ? "\n- This is a test/lab query: return the COMPLETE list of ALL dates and readings (same as 'list all dates and readings for [this test]'); do not summarize or omit any row."
+    : "";
   conversationMessages.push({
     role: "user",
     content: `${question}
@@ -1063,9 +1091,10 @@ CRITICAL REMINDERS FOR THIS RESPONSE:
 - Only use dates from the available dates list provided in the system prompt
 - Only reference documents from the file list in the system prompt
 - For test queries (HDL, LDL, etc.): Extract ALL instances from context, deduplicate by date+value, sort chronologically
+- Tables with multiple date columns (e.g. 26/02/24 26/07/23 06/09/22): output ONE ROW PER COLUMN - do not skip the middle column (e.g. 26 Jul 2023 must appear as its own row)
 - Present data in markdown tables with Date | Value | Reference Range | Source columns
 - If the same question has been asked before in this conversation, your answer MUST be identical
-- NEVER create or infer data for years/dates not explicitly in the context`
+- NEVER create or infer data for years/dates not explicitly in the context${testQueryReminder}`
   });
 
   const totalTokens = conversationMessages.reduce((sum, msg) => 
